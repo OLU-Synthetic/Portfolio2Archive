@@ -1,76 +1,117 @@
-// Portfolio2Archive index logic.
-// Edit WORKS only. Everything else is enforcement.
+// Minimal brutal index + damped PiP follow + opt-in webcam.
+// Edit WORKS only.
 
 const WORKS = [
-  // IMPORTANT: files are case-sensitive on GitHub Pages.
-  { type: "HTML", title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / elsewhere feed" },
-  { type: "HTML", title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic" },
-  { type: "HTML", title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / perceptual pressure" },
+  // file paths are RELATIVE to index.html (repo root)
+  { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy" },
+  { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic" },
+  { title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / optical pressure" },
 ];
 
 const $ = (sel) => document.querySelector(sel);
 
-function normalize(s){ return (s ?? "").toString().trim().toLowerCase(); }
-
-function render(list){
-  const ul = $("#list");
+function renderWorks() {
+  const ul = $("#works");
   ul.innerHTML = "";
 
-  if (!list.length){
+  for (const w of WORKS) {
     const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = "NO MATCHES. INPUT REJECTED.";
+    li.className = "work";
+
+    const a = document.createElement("a");
+    a.href = `./${w.file}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.innerHTML = `${escapeHtml(w.title)} <span class="arrow">↗</span>`;
+
+    li.appendChild(a);
+
+    if (w.desc && w.desc.trim()) {
+      const d = document.createElement("div");
+      d.className = "desc";
+      d.textContent = w.desc;
+      li.appendChild(d);
+    }
+
     ul.appendChild(li);
-    $("#count").textContent = "0";
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (m) => ({
+    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  })[m]);
+}
+
+// --- PiP damped follow ---
+function pipFollow() {
+  const frame = $("#pipFrame");
+  if (!frame) return;
+
+  let currentY = 0;
+  let targetY = 0;
+
+  // "float with damping": lerp toward scroll-reactive offset
+  function updateTarget() {
+    const scrollY = window.scrollY || 0;
+    // subtle: you feel it, it doesn't become a toy
+    targetY = scrollY * 0.08; // adjust 0.05–0.12 to taste
+  }
+
+  function tick() {
+    // critically damped-ish feel via simple smoothing
+    currentY += (targetY - currentY) * 0.085; // damping strength
+    frame.style.transform = `translate3d(0, ${currentY}px, 0)`;
+    requestAnimationFrame(tick);
+  }
+
+  window.addEventListener("scroll", updateTarget, { passive: true });
+  updateTarget();
+  tick();
+}
+
+// --- Webcam gate ---
+async function enableCam() {
+  const video = $("#pipVideo");
+  const gate = $("#pipGate");
+  const status = $("#pipStatus");
+
+  const say = (msg) => {
+    status.textContent = msg;
+    status.classList.add("on");
+    window.clearTimeout(say._t);
+    say._t = window.setTimeout(() => status.classList.remove("on"), 1800);
+  };
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    say("CAMERA API UNAVAILABLE.");
     return;
   }
 
-  for (const w of list){
-    const li = document.createElement("li");
-    li.className = "item";
+  gate.disabled = true;
+  gate.textContent = "REQUESTING…";
 
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = w.type;
-
-    const title = document.createElement("div");
-    title.className = "title";
-    const a = document.createElement("a");
-    a.href = `./${w.file}`; // RELATIVE PATH: works on /<repo-name>/ project pages.
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.textContent = w.title;
-    title.appendChild(a);
-
-    const desc = document.createElement("div");
-    desc.className = "desc";
-    desc.textContent = w.desc ?? "";
-
-    li.append(meta, title, desc);
-    ul.appendChild(li);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
+      audio: false,
+    });
+    video.srcObject = stream;
+    gate.textContent = "CAM ENABLED ↗";
+    say("INPUT ACCEPTED.");
+  } catch (err) {
+    gate.disabled = false;
+    gate.textContent = "ENABLE CAM ↗";
+    say("DENIED.");
   }
-
-  $("#count").textContent = String(list.length);
 }
 
-function main(){
-  const q = $("#q");
-  render(WORKS);
+function main() {
+  renderWorks();
+  pipFollow();
 
-  q.addEventListener("input", () => {
-    const query = normalize(q.value);
-    if (!query) return render(WORKS);
-
-    const filtered = WORKS.filter(w => {
-      const hay = `${w.title} ${w.type} ${w.file} ${w.desc}`.toLowerCase();
-      return hay.includes(query);
-    });
-
-    render(filtered);
-  });
-
-  // Initial count
-  $("#count").textContent = String(WORKS.length);
+  const gate = $("#pipGate");
+  if (gate) gate.addEventListener("click", enableCam);
 }
 
 main();
