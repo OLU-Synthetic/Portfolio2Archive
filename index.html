@@ -1,1 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>OLU — Works Directory</title>
+  <meta name="description" content="Static index. Hostile by design." />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <div class="wrap">
+    <main class="panel" aria-label="Works directory">
+      <header class="topbar">
+        <div class="status">
+          <span class="dot" aria-hidden="true"></span>
+          <span>ACCESS: PUBLIC</span>
+          <span class="sep">/</span>
+          <span>LOGGING: IMPLIED</span>
+        </div>
+        <div class="tag">NODE: INDEX</div>
+      </header>
+
+      <section class="body">
+        <h1>WORKS DIRECTORY</h1>
+        <p class="sub">
+          This is a list, not a pitch.
+          Click a title. A new tab opens. You become a process.
+        </p>
+
+        <div class="notice" role="note">
+          <div><strong>NOTICE</strong> — coercive UI language, delay, degradation, audit aesthetics may occur.</div>
+          <div>Proceed only if you accept being treated as input.</div>
+        </div>
+
+        <div class="controls">
+          <div class="left">
+            <div class="label">FILTER</div>
+            <input id="q" class="q" type="text" inputmode="search" autocomplete="off"
+                   placeholder="type to narrow results…" aria-label="Filter works" />
+          </div>
+          <div class="right">
+            <div class="label">COUNT</div>
+            <div id="count" class="count">—</div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <ul id="list" class="list" aria-label="Works list"></ul>
+      </section>
+
+      <footer class="footer">
+        <div>STATIC • NO TRACKERS • NO EXCUSES</div>
+        <div class="hint">Tip: filenames are case-sensitive. So are systems.</div>
+      </footer>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
 
