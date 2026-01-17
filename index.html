@@ -5,16 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <title>WORKS</title>
+
+  <!-- MUST be exactly this filename in repo root -->
   <link rel="stylesheet" href="./styles.css" />
 </head>
+
 <body>
   <!-- PiP webcam -->
   <aside class="pip" aria-label="PiP webcam frame">
     <div class="pip-frame" id="pipFrame">
       <video id="pipVideo" playsinline autoplay muted></video>
-      <button id="pipGate" class="pip-gate" type="button" aria-label="Enable webcam">
-        ENABLE CAM ↗
-      </button>
+      <button id="pipGate" class="pip-gate" type="button">ENABLE CAM ↗</button>
       <div id="pipStatus" class="pip-status" aria-live="polite"></div>
     </div>
   </aside>
@@ -23,6 +24,7 @@
     <section class="col">
       <h1 class="title">WORKS</h1>
 
+      <!-- THIS ID MUST MATCH JS -->
       <ul class="works" id="works"></ul>
 
       <footer class="footer">
@@ -33,6 +35,7 @@
     </section>
   </main>
 
+  <!-- put script at end so DOM exists before JS runs -->
   <script src="./app.js"></script>
 </body>
 </html>
