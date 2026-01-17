@@ -1,119 +1,60 @@
-const WORKS = [
-  { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy" },
-  { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic" },
-  { title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / optical pressure" },
-];
-
-const $ = (sel) => document.querySelector(sel);
-
-function assertEl(el, name) {
-  if (!el) {
-    console.error(`[INDEX] Missing element: ${name}. Check your id/class in index.html.`);
-    return false;
-  }
-  return true;
+:root{
+  --bg:#050607;
+  --fg:rgba(255,255,255,.88);
+  --muted:rgba(255,255,255,.52);
+  --line:rgba(255,255,255,.14);
+  --hard:rgba(255,255,255,.22);
+  --col:min(680px,92vw);
+  --pip:168px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  letter-spacing:.2px;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (m) => ({
-    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
-  })[m]);
+.page{min-height:100%;display:flex;justify-content:center;padding:80px 16px 40px}
+.col{width:var(--col)}
+
+.title{
+  margin:0 0 28px;
+  font-size:14px;font-weight:600;letter-spacing:2.8px;text-transform:uppercase;
+  padding-bottom:10px;border-bottom:1px solid var(--line);
 }
 
-function renderWorks() {
-  const ul = $("#works");
-  if (!assertEl(ul, "#works")) return;
+/* kill default bullets + spacing */
+.works{list-style:none;padding:0;margin:0}
 
-  ul.innerHTML = "";
-
-  for (const w of WORKS) {
-    const li = document.createElement("li");
-    li.className = "work";
-
-    const a = document.createElement("a");
-    a.href = `./${w.file}`;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.innerHTML = `${escapeHtml(w.title)} <span class="arrow">↗</span>`;
-    li.appendChild(a);
-
-    if (w.desc && w.desc.trim()) {
-      const d = document.createElement("div");
-      d.className = "desc";
-      d.textContent = w.desc;
-      li.appendChild(d);
-    }
-
-    ul.appendChild(li);
-  }
+.work{padding:14px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+.work a{
+  display:inline-flex;align-items:baseline;gap:10px;
+  color:var(--fg);text-decoration:none;font-style:italic;font-size:15px;
+  border-bottom:1px solid rgba(255,255,255,.18);padding-bottom:2px;
 }
+.work a:hover{border-bottom-color:rgba(255,255,255,.6)}
+.arrow{font-style:normal;opacity:.7;transform:translateY(-1px)}
+.desc{margin-top:6px;color:var(--muted);font-size:12px}
 
-function pipFollow() {
-  const frame = $("#pipFrame");
-  if (!frame) return;
-
-  let currentY = 0, targetY = 0;
-
-  function updateTarget() {
-    targetY = (window.scrollY || 0) * 0.08;
-  }
-
-  function tick() {
-    currentY += (targetY - currentY) * 0.085;
-    frame.style.transform = `translate3d(0, ${currentY}px, 0)`;
-    requestAnimationFrame(tick);
-  }
-
-  window.addEventListener("scroll", updateTarget, { passive: true });
-  updateTarget();
-  tick();
+.footer{
+  margin-top:36px;padding-top:14px;border-top:1px solid var(--line);
+  display:flex;gap:14px;flex-wrap:wrap
 }
-
-async function enableCam() {
-  const video = $("#pipVideo");
-  const gate = $("#pipGate");
-  const status = $("#pipStatus");
-
-  if (!video || !gate || !status) {
-    console.error("[INDEX] PiP elements missing. Need #pipVideo, #pipGate, #pipStatus.");
-    return;
-  }
-
-  const say = (msg) => {
-    status.textContent = msg;
-    status.classList.add("on");
-    clearTimeout(say._t);
-    say._t = setTimeout(() => status.classList.remove("on"), 1800);
-  };
-
-  if (!navigator.mediaDevices?.getUserMedia) {
-    say("CAMERA API UNAVAILABLE.");
-    return;
-  }
-
-  gate.disabled = true;
-  gate.textContent = "REQUESTING…";
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
-    video.srcObject = stream;
-    gate.textContent = "CAM ENABLED ↗";
-    say("INPUT ACCEPTED.");
-  } catch {
-    gate.disabled = false;
-    gate.textContent = "ENABLE CAM ↗";
-    say("DENIED.");
-  }
+.footlink{
+  color:var(--muted);text-decoration:none;border:1px solid rgba(255,255,255,.12);
+  padding:8px 10px;border-radius:0
 }
+.footlink:hover{color:var(--fg);border-color:rgba(255,255,255,.3)}
 
-function main() {
-  renderWorks();
-  pipFollow();
-  const gate = $("#pipGate");
-  if (gate) gate.addEventListener("click", enableCam);
-
-  // quick sanity log
-  console.log("[INDEX] Loaded. If CSS 404s, your file path or Pages folder is wrong.");
+/* PiP */
+.pip{position:fixed;left:16px;top:50%;transform:translateY(-50%);z-index:20;pointer-events:none}
+.pip-frame{
+  width:var(--pip);height:var(--pip);border:1px solid var(--hard);
+  background:rgba(255,255,255,.02);
+  box-shadow:0 18px 60px rgba(0,0,0,.55), inset 0 0 0 1px rgba(0,0,0,.6);
+  overflow:hidden;position:relative;will-change:transform;pointer-events:auto
 }
-
-main();
+.pip-frame video{width:100%;height:100%;object-fit:cover;f
