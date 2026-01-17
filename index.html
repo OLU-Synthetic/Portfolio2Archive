@@ -14,8 +14,18 @@
   <!-- PiP webcam -->
   <aside class="pip" aria-label="PiP webcam frame">
     <div class="pip-frame" id="pipFrame">
-      <video id="pipVideo" playsinline autoplay muted></video>
+      <!-- processed output (we draw video + degradation + trace here) -->
+      <canvas id="pipCanvas"></canvas>
+
+      <!-- hidden capture source -->
+      <video id="pipVideo" playsinline autoplay muted style="display:none"></video>
+
+      <!-- gate becomes ENABLE/DISABLE toggle -->
       <button id="pipGate" class="pip-gate" type="button">ENABLE CAM ↗</button>
+
+      <!-- tiny mode toggle (face/body) -->
+      <button id="pipMode" class="pip-mode" type="button" aria-label="Toggle trace mode" style="display:none">MODE: BODY</button>
+
       <div id="pipStatus" class="pip-status" aria-live="polite"></div>
     </div>
   </aside>
