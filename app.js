@@ -1,6 +1,6 @@
 const WORKS = [
   // Optional: poster, date, medium, status
-  { title: "Sludge", file: "works/sludge/index.html", desc: "AI Sludge", date:"2026", medium:"HyperCollage", status:"RUN" },
+  { title: "Sludge", file: "works/sludge/SludgeV002.html", desc: "AI Sludge", date:"2026", medium:"HyperCollage", status:"RUN" },
   { title: "Skull_Dyptych", file: "works/skull_dyptych.html", desc: "delayed self / degraded copy", date:"2026", medium:"WEB", status:"OPEN", poster:"assets/posters/skull_dyptych.jpg" },
   { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy", date:"2026", medium:"WEB/CAMERA", status:"RUN" },
   { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic", date:"2026", medium:"WEB/3D", status:"OPEN" },
