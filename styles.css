@@ -2,7 +2,6 @@
   --bg:#050607;
   --fg:rgba(255,255,255,.90);
   --muted:rgba(255,255,255,.55);
-  --faint:rgba(255,255,255,.10);
   --line:rgba(255,255,255,.14);
   --hard:rgba(255,255,255,.22);
 
@@ -25,7 +24,6 @@ body{
   letter-spacing:.25px;
 }
 
-/* page frame */
 .page{
   min-height:100%;
   display:flex;
@@ -33,23 +31,47 @@ body{
   padding: 70px 16px 70px;
 }
 
-/* the slab */
+/* The outer "bevel plates" live on .col */
 .col{
   width: var(--col);
-  text-align: center;         /* YOU WANTED CENTERED */
+  position: relative;
+  text-align: center;
+}
+
+/* bevel / perspective plates */
+.col::before{
+  content:"";
+  position:absolute;
+  inset:-10px -12px -12px -10px;
+  border:1px solid rgba(255,255,255,.07);
+  transform: perspective(900px) rotateX(2deg) rotateY(-2deg);
+  transform-origin: 40% 20%;
+  pointer-events:none;
+}
+.col::after{
+  content:"";
+  position:absolute;
+  inset:-18px -22px -24px -18px;
+  border:1px solid rgba(255,255,255,.04);
+  transform: perspective(900px) rotateX(3deg) rotateY(-3deg);
+  transform-origin: 40% 20%;
+  pointer-events:none;
+}
+
+/* The actual slab surface */
+.col > .slab{
   border: 1px solid var(--hard);
   box-shadow:
     0 28px 90px rgba(0,0,0,.55),
     inset 0 0 0 1px rgba(0,0,0,.7);
   background: rgba(255,255,255,.01);
   padding: var(--pad);
-  border-radius: 0;
   position: relative;
 }
 
-/* inner rails: brutalist structure */
-.col::before,
-.col::after{
+/* inner rails (now they won't be overridden) */
+.col > .slab::before,
+.col > .slab::after{
   content:"";
   position:absolute;
   top: 0;
@@ -58,8 +80,8 @@ body{
   background: rgba(255,255,255,.07);
   pointer-events:none;
 }
-.col::before{ left: var(--pad); }
-.col::after{ right: var(--pad); }
+.col > .slab::before{ left: var(--pad); }
+.col > .slab::after{ right: var(--pad); }
 
 .title{
   margin: 4px 0 18px;
@@ -71,11 +93,10 @@ body{
 
 .rule{
   height:1px;
-  background: var(--line);
+  background: rgba(255,255,255,.16);
   margin: 14px 0 22px;
 }
 
-/* list layout */
 .works{
   list-style:none;
   padding:0;
@@ -86,12 +107,11 @@ body{
 }
 
 .work{
-  border-top: 1px solid rgba(255,255,255,.10);
+  border-top: 1px solid rgba(255,255,255,.14);
   border-bottom: 1px solid rgba(255,255,255,.06);
   padding: 16px 14px 14px;
 }
 
-/* poster/media slot */
 .media{
   width: min(520px, 100%);
   aspect-ratio: 16/9;
@@ -110,7 +130,6 @@ body{
   opacity:.92;
 }
 
-/* title link */
 .work a{
   display:inline-flex;
   justify-content:center;
@@ -123,7 +142,7 @@ body{
   border-bottom: 1px solid rgba(255,255,255,.24);
   padding-bottom: 2px;
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: 1.8px;
 }
 .work a:hover{ border-bottom-color: rgba(255,255,255,.70); }
 
@@ -143,7 +162,6 @@ body{
   font-size: 12px;
 }
 
-/* metadata row */
 .meta{
   margin-top: 10px;
   display:flex;
@@ -162,7 +180,6 @@ body{
   background: rgba(0,0,0,.18);
 }
 
-/* footer */
 .footer{
   margin-top: 22px;
   padding-top: 18px;
@@ -207,12 +224,12 @@ body{
   will-change: transform;
   pointer-events:auto;
 }
-.pip-frame video{
+.pip-frame canvas{
+  position:absolute;
+  inset:0;
   width:100%;
   height:100%;
-  object-fit:cover;
-  filter: contrast(1.05) grayscale(.25);
-  opacity:.92;
+  display:block;
 }
 .pip-gate{
   position:absolute;
@@ -227,30 +244,6 @@ body{
   cursor: pointer;
   border-radius:0;
 }
-.pip-status{
-  position:absolute;
-  left:8px; right:8px; bottom:8px;
-  font-size:11px;
-  color: rgba(255,255,255,.65);
-  background: rgba(0,0,0,.45);
-  border:1px solid rgba(255,255,255,.10);
-  padding:6px 8px;
-  opacity:0;
-  transform: translateY(6px);
-  transition: opacity 160ms linear, transform 160ms linear;
-}
-.pip-status.on{ opacity:1; transform: translateY(0); }
-
-/* PiP canvas fills the frame */
-.pip-frame canvas{
-  position:absolute;
-  inset:0;
-  width:100%;
-  height:100%;
-  display:block;
-}
-
-/* mode toggle: tiny, hard */
 .pip-mode{
   position:absolute;
   right:8px;
@@ -267,42 +260,23 @@ body{
 }
 .pip-mode:hover{ border-color: rgba(255,255,255,.35); color: rgba(255,255,255,.92); }
 
-/* HARDER “3D” slab treatment: bevel + perspective shadow */
-.col{
-  position:relative;
-}
-.col::before{
-  content:"";
+.pip-status{
   position:absolute;
-  inset:-10px -12px -12px -10px;
-  border:1px solid rgba(255,255,255,.07);
-  transform: perspective(900px) rotateX(2deg) rotateY(-2deg);
-  transform-origin: 40% 20%;
-  pointer-events:none;
+  left:8px; right:8px; bottom:42px;
+  font-size:11px;
+  color: rgba(255,255,255,.65);
+  background: rgba(0,0,0,.45);
+  border:1px solid rgba(255,255,255,.10);
+  padding:6px 8px;
+  opacity:0;
+  transform: translateY(6px);
+  transition: opacity 160ms linear, transform 160ms linear;
 }
-.col::after{
-  content:"";
-  position:absolute;
-  inset:-18px -22px -24px -18px;
-  border:1px solid rgba(255,255,255,.04);
-  transform: perspective(900px) rotateX(3deg) rotateY(-3deg);
-  transform-origin: 40% 20%;
-  pointer-events:none;
-}
-
-/* more brutal rules */
-.rule{ background: rgba(255,255,255,.16); }
-.work{ border-top: 1px solid rgba(255,255,255,.14); }
-
-/* tighten italics so it looks intentional, not fancy */
-.work a{
-  font-style: italic;
-  letter-spacing: 1.8px;
-}
-
+.pip-status.on{ opacity:1; transform: translateY(0); }
 
 @media (max-width: 900px){
   .pip{ display:none; }
   .page{ padding-top: 48px; }
   .col::before, .col::after{ display:none; }
+  .col > .slab::before, .col > .slab::after{ display:none; }
 }
