@@ -1,13 +1,9 @@
-// WORKS INDEX — brutal slab + optional media + PiP trace (face/body) controlling fidelity.
-
 const WORKS = [
-  // Add optional fields:
-  // poster: "assets/posters/name.jpg"
-  // date, medium, duration, role
-  { title: "Skull_Dyptych", file: "works/skull_dyptych.html", desc: "delayed self / degraded copy", date:"2026", medium:"WEB", duration:"LOOP", poster:"assets/posters/skull_dyptych.jpg" },
-  { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy", date:"2026", medium:"WEB/CAMERA", duration:"REALTIME" },
-  { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic", date:"2026", medium:"WEB/3D", duration:"RUNTIME" },
-  { title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / optical pressure", date:"2026", medium:"WEB/GENERATIVE", duration:"LOOP" },
+  // Optional: poster, date, medium, status
+  { title: "Skull_Dyptych", file: "works/skull_dyptych.html", desc: "delayed self / degraded copy", date:"2026", medium:"WEB", status:"OPEN", poster:"assets/posters/skull_dyptych.jpg" },
+  { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy", date:"2026", medium:"WEB/CAMERA", status:"RUN" },
+  { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic", date:"2026", medium:"WEB/3D", status:"OPEN" },
+  { title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / optical pressure", date:"2026", medium:"WEB/GENERATIVE", status:"OPEN" },
 ];
 
 const $ = (sel) => document.querySelector(sel);
@@ -21,13 +17,18 @@ function escapeHtml(s) {
 function say(msg){
   const status = $("#pipStatus");
   if(!status) return;
+
+  const now = performance.now();
+  if (say._last && now - say._last < 250) return;
+  say._last = now;
+
   status.textContent = msg;
   status.classList.add("on");
   clearTimeout(say._t);
-  say._t = setTimeout(() => status.classList.remove("on"), 2000);
+  say._t = setTimeout(() => status.classList.remove("on"), 650);
 }
 
-/* ---------- WORKS RENDER ---------- */
+/* ---------- REGISTRY RENDER ---------- */
 
 function renderWorks() {
   const ul = $("#works");
@@ -38,7 +39,7 @@ function renderWorks() {
     const li = document.createElement("li");
     li.className = "work";
 
-    // Optional poster (auto-remove if missing)
+    // optional poster (remove formatting if missing)
     if (w.poster) {
       const media = document.createElement("div");
       media.className = "media";
@@ -47,43 +48,45 @@ function renderWorks() {
       img.src = `./${w.poster}`;
       img.alt = `${w.title} poster`;
       img.loading = "lazy";
-      img.onerror = () => media.remove(); // hide formatting if poster is missing
+      img.onerror = () => media.remove();
 
       media.appendChild(img);
       li.appendChild(media);
     }
 
+    const date = document.createElement("div");
+    date.className = "cell date";
+    date.textContent = w.date || "—";
+    li.appendChild(date);
+
+    const medium = document.createElement("div");
+    medium.className = "cell medium";
+    medium.textContent = w.medium || "—";
+    li.appendChild(medium);
+
+    const titlecell = document.createElement("div");
+    titlecell.className = "titlecell";
+
     const a = document.createElement("a");
+    a.className = "titlelink";
     a.href = `./${w.file}`;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.innerHTML = `${escapeHtml(w.title)} <span class="arrow">↗</span>`;
-    li.appendChild(a);
+    titlecell.appendChild(a);
+
+    li.appendChild(titlecell);
+
+    const status = document.createElement("div");
+    status.className = "cell status";
+    status.textContent = (w.status || "OPEN").toUpperCase();
+    li.appendChild(status);
 
     if (w.desc && w.desc.trim()) {
       const d = document.createElement("div");
-      d.className = "desc";
+      d.className = "descrow";
       d.textContent = w.desc;
       li.appendChild(d);
-    }
-
-    // Optional tags
-    const tags = [];
-    if (w.date) tags.push(w.date);
-    if (w.medium) tags.push(w.medium);
-    if (w.duration) tags.push(w.duration);
-    if (w.role) tags.push(w.role);
-
-    if (tags.length) {
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      for (const t of tags) {
-        const span = document.createElement("span");
-        span.className = "tag";
-        span.textContent = t;
-        meta.appendChild(span);
-      }
-      li.appendChild(meta);
     }
 
     ul.appendChild(li);
@@ -95,43 +98,76 @@ function addMicroInteractions() {
   if (!ul) return;
 
   ul.addEventListener("mouseover", (e) => {
-    const a = e.target.closest("a");
+    const a = e.target.closest(".titlelink");
     if (a) a.classList.add("hot");
   });
   ul.addEventListener("mouseout", (e) => {
-    const a = e.target.closest("a");
+    const a = e.target.closest(".titlelink");
     if (a) a.classList.remove("hot");
   });
 }
 
-/* ---------- PiP FOLLOW ---------- */
+/* ---------- PiP CLAMP + FOLLOW ---------- */
+
+function clampPipToSlab(){
+  const slab = document.querySelector(".col");
+  const pipFrame = $("#pipFrame");
+  if (!slab || !pipFrame) return;
+
+  const slabRect = slab.getBoundingClientRect();
+  const pipW = pipFrame.getBoundingClientRect().width || 200;
+  const gap = 18;
+
+  // safeX = left edge so that (pipRight + gap) <= slabLeft
+  const safeX = slabRect.left - pipW - gap;
+
+  // if there’s no room, hide PiP (instead of overlapping)
+  const pip = document.querySelector(".pip");
+  if (!pip) return;
+
+  if (safeX < 8) {
+    pip.style.display = "none";
+    return;
+  } else {
+    pip.style.display = "block";
+  }
+
+  const x = Math.max(8, safeX);
+  document.documentElement.style.setProperty("--pipX", `${x}px`);
+}
 
 function pipFollow() {
   const frame = $("#pipFrame");
   if (!frame) return;
 
   let y = 0, target = 0;
-  function updateTarget(){ target = (window.scrollY || 0) * 0.08; }
+
+  function updateTarget(){
+    target = (window.scrollY || 0) * 0.08;
+    clampPipToSlab();
+  }
+
   function tick(){
     y += (target - y) * 0.085;
     frame.style.transform = `translate3d(0, ${y}px, 0)`;
     requestAnimationFrame(tick);
   }
+
   window.addEventListener("scroll", updateTarget, { passive:true });
+  window.addEventListener("resize", updateTarget);
   updateTarget();
   tick();
 }
 
-/* ---------- PiP CAMERA + TRACE ---------- */
+/* ---------- PiP CAMERA + TRACE (same logic) ---------- */
 
 let camOn = false;
 let stream = null;
 
-let traceMode = "BODY"; // BODY | FACE
-let fidelity = 0;       // 0..1
+let traceMode = "BODY";
+let fidelity = 0;
 
-// MediaPipe trackers (lazy)
-let mp = null; // { FaceLandmarker, PoseLandmarker, FilesetResolver, face, pose }
+let mp = null;
 let trackerReady = false;
 
 function clamp01(x){ return Math.max(0, Math.min(1, x)); }
@@ -149,17 +185,13 @@ async function loadMediapipe(){
     );
 
     const face = await FaceLandmarker.createFromOptions(fileset, {
-      baseOptions: {
-        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-      },
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" },
       runningMode: "VIDEO",
       numFaces: 1
     });
 
     const pose = await PoseLandmarker.createFromOptions(fileset, {
-      baseOptions: {
-        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-      },
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" },
       runningMode: "VIDEO",
       numPoses: 1
     });
@@ -182,11 +214,11 @@ function stopCamera(){
     for(const t of stream.getTracks()) t.stop();
     stream = null;
   }
-  if(video){
-    video.srcObject = null;
-  }
+  if(video) video.srcObject = null;
+
   camOn = false;
   fidelity = 0;
+  document.documentElement.style.setProperty("--glow", "0");
 
   if(gate){
     gate.disabled = false;
@@ -199,25 +231,15 @@ function stopCamera(){
 }
 
 async function toggleCamera(){
-  if(camOn){
-    stopCamera();
-    return;
-  }
+  if(camOn){ stopCamera(); return; }
 
   const video = $("#pipVideo");
   const gate = $("#pipGate");
   const modeBtn = $("#pipMode");
 
   if(!video || !gate) return;
-
-  if(!window.isSecureContext){
-    say("DENIED: HTTPS REQUIRED.");
-    return;
-  }
-  if(!navigator.mediaDevices?.getUserMedia){
-    say("DENIED: CAMERA API UNAVAILABLE.");
-    return;
-  }
+  if(!window.isSecureContext){ say("DENIED: HTTPS REQUIRED."); return; }
+  if(!navigator.mediaDevices?.getUserMedia){ say("DENIED: CAMERA API UNAVAILABLE."); return; }
 
   gate.disabled = true;
   gate.textContent = "REQUESTING…";
@@ -234,6 +256,7 @@ async function toggleCamera(){
 
     gate.disabled = false;
     gate.textContent = "DISABLE CAM ↗";
+
     if(modeBtn){
       modeBtn.style.display = "block";
       modeBtn.textContent = `MODE: ${traceMode}`;
@@ -241,7 +264,6 @@ async function toggleCamera(){
 
     say("INPUT ACCEPTED.");
 
-    // lazy-load trackers (optional). If it fails, we still run degraded feed.
     loadMediapipe().then((ok) => {
       if(ok) say(`TRACE ONLINE: ${traceMode}.`);
       else   say("TRACE OFFLINE.");
@@ -259,30 +281,24 @@ function toggleMode(){
   traceMode = (traceMode === "BODY") ? "FACE" : "BODY";
   const modeBtn = $("#pipMode");
   if(modeBtn) modeBtn.textContent = `MODE: ${traceMode}`;
-  // don’t lie: if mediapipe isn't loaded, mode does nothing visually
   say(`MODE SET: ${traceMode}.`);
 }
 
-/* --- drawing / degradation --- */
+/* --- drawing --- */
 
-const PIP = {
-  off: null,
-  offCtx: null,
-  lastTs: 0
-};
+const PIP = { off:null, offCtx:null };
 
 function ensureOffscreen(){
   if(PIP.off) return;
   PIP.off = document.createElement("canvas");
-  PIP.offCtx = PIP.off.getContext("2d", { willReadFrequently:false });
+  PIP.offCtx = PIP.off.getContext("2d", { willReadFrequently:true });
 }
 
 function drawPixelated(ctx, srcVideo, w, h, clarity){
-  // clarity 0..1. Low clarity => heavy pixelation.
   ensureOffscreen();
 
-  const minScale = 0.12;         // brutal
-  const maxScale = 1.0;          // clean
+  const minScale = 0.12;
+  const maxScale = 1.0;
   const s = minScale + (maxScale - minScale) * (clarity*clarity);
 
   const sw = Math.max(2, Math.floor(w * s));
@@ -290,7 +306,6 @@ function drawPixelated(ctx, srcVideo, w, h, clarity){
 
   PIP.off.width = sw; PIP.off.height = sh;
 
-  // cover-fit into offscreen
   const vw = srcVideo.videoWidth || 1;
   const vh = srcVideo.videoHeight || 1;
   const scale = Math.max(sw / vw, sh / vh);
@@ -301,32 +316,41 @@ function drawPixelated(ctx, srcVideo, w, h, clarity){
   PIP.offCtx.imageSmoothingEnabled = true;
   PIP.offCtx.drawImage(srcVideo, dx, dy, dw, dh);
 
-  // draw upscaled
+  // posterize low clarity (real quantization)
+  const levels = Math.floor(28 - clarity * 24); // 28 -> 4
+  if (levels > 5) {
+    const img = PIP.offCtx.getImageData(0,0,sw,sh);
+    const d = img.data;
+    const step = 255 / (levels - 1);
+    for (let i=0; i<d.length; i+=4){
+      d[i]   = Math.round(d[i]   / step) * step;
+      d[i+1] = Math.round(d[i+1] / step) * step;
+      d[i+2] = Math.round(d[i+2] / step) * step;
+    }
+    PIP.offCtx.putImageData(img,0,0);
+  }
+
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(PIP.off, 0, 0, w, h);
 
-  // quantize + scanline overlay (fade with clarity)
-  const q = Math.floor(28 - clarity * 24); // 28 levels -> 4 levels
+  // scanlines fade with clarity
   ctx.globalAlpha = 0.18 * (1 - clarity);
+  ctx.fillStyle = "#fff";
   for(let y=0; y<h; y+=3) ctx.fillRect(0,y,w,1);
   ctx.globalAlpha = 1;
 
-  // slight vignette
+  // vignette fades with clarity
   const g = ctx.createRadialGradient(w*0.5,h*0.5, Math.min(w,h)*0.1, w*0.5,h*0.5, Math.max(w,h)*0.75);
   g.addColorStop(0, "rgba(0,0,0,0)");
   g.addColorStop(1, `rgba(0,0,0,${(0.60 - clarity*0.35).toFixed(3)})`);
   ctx.fillStyle = g;
   ctx.fillRect(0,0,w,h);
-
-  // restore fillStyle for scanline next frame
-  ctx.fillStyle = "#fff";
 }
 
 function drawFaceOverlay(ctx, landmarks, w, h){
   ctx.strokeStyle = "rgba(120,255,255,0.30)";
   ctx.lineWidth = 1;
 
-  // draw a crude hull: bounding box of landmarks (cheap but effective)
   let minx=1e9, miny=1e9, maxx=-1e9, maxy=-1e9;
   for(const p of landmarks){
     const x = p.x*w, y = p.y*h;
@@ -334,14 +358,11 @@ function drawFaceOverlay(ctx, landmarks, w, h){
     if(x>maxx) maxx=x; if(y>maxy) maxy=y;
   }
   const bw = maxx-minx, bh = maxy-miny;
-
   ctx.strokeRect(minx, miny, bw, bh);
 
-  // corners
   ctx.strokeStyle = "rgba(255,214,74,0.55)";
   ctx.lineWidth = 2;
-  const c=14;
-  const x=minx, y=miny, W=bw, H=bh;
+  const c=14, x=minx, y=miny, W=bw, H=bh;
   ctx.beginPath(); ctx.moveTo(x,y+c); ctx.lineTo(x,y); ctx.lineTo(x+c,y); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x+W-c,y); ctx.lineTo(x+W,y); ctx.lineTo(x+W,y+c); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x,y+H-c); ctx.lineTo(x,y+H); ctx.lineTo(x+c,y+H); ctx.stroke();
@@ -349,11 +370,6 @@ function drawFaceOverlay(ctx, landmarks, w, h){
 }
 
 function drawPoseOverlay(ctx, landmarks, w, h){
-  // draw only torso + arms (what you asked for)
-  // indices from MediaPipe pose: shoulders(11,12), elbows(13,14), wrists(15,16), hips(23,24)
-  const idx = [11,12,13,14,15,16,23,24];
-  const pts = idx.map(i => landmarks[i]).filter(Boolean).map(p => ({x:p.x*w, y:p.y*h, v:p.visibility ?? 0.0}));
-
   ctx.strokeStyle = "rgba(120,255,255,0.28)";
   ctx.lineWidth = 1.5;
 
@@ -366,7 +382,7 @@ function drawPoseOverlay(ctx, landmarks, w, h){
     ctx.stroke();
   }
 
-  // shoulders, arms, hips
+  // torso + arms
   line(11,12);
   line(11,13); line(13,15);
   line(12,14); line(14,16);
@@ -374,39 +390,39 @@ function drawPoseOverlay(ctx, landmarks, w, h){
   line(11,23); line(12,24);
 
   // points
+  const idx = [11,12,13,14,15,16,23,24];
   ctx.fillStyle = "rgba(255,214,74,0.65)";
-  for(const p of pts){
-    const r = 2 + (p.v*2);
+  for(const i of idx){
+    const p = landmarks[i];
+    if(!p) continue;
+    const v = p.visibility ?? 0;
+    const r = 2 + v*2;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+    ctx.arc(p.x*w, p.y*h, r, 0, Math.PI*2);
     ctx.fill();
   }
 }
 
 function computeFidelityFromLandmarksFace(landmarks){
-  // fidelity rises with face size (closer/more "captured")
   let minx=1e9, miny=1e9, maxx=-1e9, maxy=-1e9;
   for(const p of landmarks){
     if(p.x<minx) minx=p.x; if(p.y<miny) miny=p.y;
     if(p.x>maxx) maxx=p.x; if(p.y>maxy) maxy=p.y;
   }
-  const area = Math.max(0, (maxx-minx) * (maxy-miny)); // 0..~0.4
-  const mapped = (area - 0.03) / 0.12; // tune thresholds
-  return clamp01(mapped);
+  const area = Math.max(0, (maxx-minx) * (maxy-miny));
+  return clamp01((area - 0.03) / 0.12);
 }
 
 function computeFidelityFromPose(landmarks){
-  // use visibility of shoulders+wrists as "body captured"
   const keys = [11,12,15,16,23,24];
   let sum=0, n=0;
   for(const i of keys){
     const p = landmarks[i];
     if(!p) continue;
-    const v = (p.visibility ?? 0.0);
-    sum += v; n++;
+    sum += (p.visibility ?? 0);
+    n++;
   }
   if(!n) return 0;
-  // visibility is often 0..1 but conservative
   return clamp01((sum/n - 0.25) / 0.55);
 }
 
@@ -416,7 +432,6 @@ async function pipRenderLoop(){
   if(!canvas || !video) return;
 
   const ctx = canvas.getContext("2d", { alpha:false, desynchronized:true });
-  ctx.fillStyle = "#fff";
 
   function resize(){
     const r = canvas.getBoundingClientRect();
@@ -428,25 +443,21 @@ async function pipRenderLoop(){
     }
   }
 
-  async function tick(){
+  function tick(){
     resize();
     const w = canvas.width, h = canvas.height;
 
-    // default: no camera or no frame => black plate
     if(!camOn || video.videoWidth <= 0){
       ctx.fillStyle = "#000";
       ctx.fillRect(0,0,w,h);
-      ctx.fillStyle = "#fff";
-      ctx.globalAlpha = 0.65;
+      ctx.fillStyle = "rgba(255,255,255,.65)";
       ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace";
       ctx.fillText("OFFLINE PLATE", 12, 20);
-      ctx.globalAlpha = 1;
       requestAnimationFrame(tick);
       return;
     }
 
-    // tracking (if available)
-    let targetFid = 0.08; // base "always degraded"
+    let targetFid = 0.08;
     let faceLandmarks = null;
     let poseLandmarks = null;
 
@@ -463,10 +474,9 @@ async function pipRenderLoop(){
           } else {
             targetFid = 0.06;
           }
-        } else { // BODY
+        } else {
           const res = mp.pose.detectForVideo(video, now);
-          const poses = res.landmarks || res.poseLandmarks || []; // library differences
-          const lm = poses[0] || res.landmarks?.[0] || null;
+          const lm = (res.landmarks && res.landmarks[0]) ? res.landmarks[0] : null;
           if(lm){
             poseLandmarks = lm;
             targetFid = 0.12 + 0.88 * computeFidelityFromPose(poseLandmarks);
@@ -474,32 +484,23 @@ async function pipRenderLoop(){
             targetFid = 0.06;
           }
         }
-      }catch(e){
-        // If tracker glitches, don't kill the PiP. Just degrade.
+      }catch{
         targetFid = 0.06;
       }
     }
 
-    // smooth fidelity (feels like "system catching up")
-    fidelity = fidelity * 0.92 + targetFid * 0.08;
-    fidelity = clamp01(fidelity);
+    // smooth
+    fidelity = clamp01(fidelity * 0.92 + targetFid * 0.08);
 
-    // draw degraded -> clear based on fidelity
-    ctx.fillStyle = "#fff";
+    // drive background glow
+    document.documentElement.style.setProperty("--glow", fidelity.toFixed(3));
+
     drawPixelated(ctx, video, w, h, fidelity);
 
-    // overlay trace (only if we have it)
-    if(faceLandmarks){
-      drawFaceOverlay(ctx, faceLandmarks, w, h);
-    }
-    if(poseLandmarks){
-      drawPoseOverlay(ctx, poseLandmarks, w, h);
-    }
+    if(faceLandmarks) drawFaceOverlay(ctx, faceLandmarks, w, h);
+    if(poseLandmarks) drawPoseOverlay(ctx, poseLandmarks, w, h);
 
-    // status line
-    const mode = traceMode;
-    const t = `TRACE ${mode} · FID ${(fidelity).toFixed(2)}`;
-    say(t);
+    say(`TRACE ${traceMode} · FID ${fidelity.toFixed(2)}`);
 
     requestAnimationFrame(tick);
   }
@@ -520,6 +521,7 @@ function main(){
   const modeBtn = $("#pipMode");
   if(modeBtn) modeBtn.addEventListener("click", toggleMode);
 
+  clampPipToSlab();
   pipRenderLoop();
 }
 
