@@ -1,0 +1,952 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GAMER SLUDGE</title>
+<style>
+  :root{
+    --bg:#05060a;
+    --fg: rgba(235,240,255,0.86);
+    --dim: rgba(235,240,255,0.52);
+    --line: rgba(235,240,255,0.18);
+    --warn: rgba(255,230,140,0.88);
+    --bad: rgba(255,120,140,0.86);
+    --good: rgba(140,255,190,0.86);
+  }
+  html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;}
+  body{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+  canvas{position:fixed; inset:0; width:100%; height:100%; display:block; background:var(--bg);}
+
+  #start{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background: radial-gradient(ellipse at center, rgba(235,240,255,0.06), rgba(0,0,0,0) 55%);
+  }
+  #panel{
+    display:flex; flex-direction:column; gap:12px; align-items:center;
+    padding:18px 22px;
+    border:1px solid rgba(235,240,255,0.18);
+    background: rgba(10,12,18,0.62);
+    backdrop-filter: blur(6px);
+  }
+  #title{letter-spacing:0.22em; font-size:13px; color: rgba(235,240,255,0.74);}
+  #begin{
+    appearance:none; border:1px solid rgba(235,240,255,0.28);
+    background: rgba(235,240,255,0.07);
+    color: rgba(235,240,255,0.86);
+    padding:10px 16px;
+    font-size:12px;
+    letter-spacing:0.14em;
+    cursor:pointer;
+  }
+  #begin:hover{ background: rgba(235,240,255,0.10); }
+  #hint{font-size:11px; color: rgba(235,240,255,0.56); letter-spacing:0.02em; text-align:center; max-width:48ch;}
+  #corner{
+    position:fixed; left:14px; bottom:12px;
+    font-size:11px; color: rgba(235,240,255,0.56);
+    letter-spacing:0.02em;
+    opacity:0; transition: opacity 160ms linear;
+    pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="start">
+  <div id="panel">
+    <div id="title">GAMER SLUDGE</div>
+    <button id="begin">BEGIN</button>
+    <div id="hint">self-consuming HUD collage · feedback rot · 96s crash · offline · ESC reset</div>
+  </div>
+</div>
+
+<div id="corner">ESC: RESET</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ====== Score ======
+  const DURATION = 96.0;       // seconds to "crash"
+  const CRASH_FREEZE_AT = 96.0;
+  const MICRO_MIN = 0.20;      // seconds between microcuts (fast)
+  const MICRO_MAX = 0.80;
+  const MACRO_MIN = 6.0;       // seconds between macro state shifts
+  const MACRO_MAX = 12.0;
+
+  // ====== Canvas ======
+  const c = document.getElementById("c");
+  const ctx = c.getContext("2d", { alpha:false, desynchronized:true });
+
+  const startOverlay = document.getElementById("start");
+  const beginBtn = document.getElementById("begin");
+  const corner = document.getElementById("corner");
+
+  // Offscreen buffers for feedback
+  const prev = document.createElement("canvas");
+  const ptx = prev.getContext("2d", { alpha:false, desynchronized:true });
+
+  // Downsample for heavy ops
+  const small = document.createElement("canvas");
+  const stx = small.getContext("2d", { willReadFrequently:true });
+
+  // ====== RNG ======
+  function hashSeedFromNow(){
+    const n = Date.now() >>> 0;
+    let x = n ^ 0x9e3779b9;
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    return x >>> 0;
+  }
+  function mulberry32(a){
+    return function(){
+      let t = a += 0x6D2B79F5;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  let seed = 1337;
+  let rng = mulberry32(seed);
+  const R = () => rng();
+  const rint = (a,b) => (a + Math.floor(R()*(b-a+1)));
+  const rpick = (arr) => arr[Math.floor(R()*arr.length)];
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const lerp = (a,b,t) => a + (b-a)*t;
+  const smoothstep = (a,b,x) => {
+    const t = clamp((x-a)/(b-a), 0, 1);
+    return t*t*(3-2*t);
+  };
+
+  // ====== State ======
+  let running = false;
+  let t0 = 0;
+  let raf = 0;
+
+  let heat = 0;              // 0..1 pressure cooker
+  let microNext = 0;
+  let macroNext = 0;
+
+  // “Modes” (texture shifts so sludge doesn’t flatline)
+  const MODES = ["BOOT", "HUD_FEED", "MATCH", "ANTICHEAT", "PATCHNOTES", "KILLFEED", "GLITCHLOOP"];
+  let mode = "BOOT";
+
+  // Module objects (particles)
+  const damageNums = [];
+  const toasts = [];
+  const popups = [];
+  const chat = [];
+  const patchLines = [];
+
+  // Fonts (system only)
+  const FONTS = [
+    "ui-monospace, Menlo, Consolas, monospace",
+    "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif",
+    "'Arial Black', Gadget, sans-serif",
+  ];
+
+  // Vocab: gamer sludge lexicon
+  const WEAPONS = ["MK-7", "VULCAN", "SABLE", "FALCON", "KITE-9", "RIPSAW", "NEBULA", "KRAKEN", "GHOST", "ARC-2"];
+  const STATUS = ["OK", "WARN", "VIOLATION", "SYNC", "DESYNC", "PACKET_LOSS", "TIMEOUT", "RETRY", "LOCKED", "INVALID"];
+  const FLAGS  = ["AIM_ASSIST", "HITREG", "NETCODE", "RECOIL", "INPUT_LAG", "FPS_DROP", "GPU_STALL", "EAC", "VAC", "KERNEL"];
+  const CODES  = ["0x0A7F", "0xDEAD", "0xC0DE", "0xBEEF", "0xF00D", "0x1337", "0xFEED", "0xBADC0DE"];
+  const RANKS  = ["BRONZE", "SILVER", "GOLD", "PLAT", "DIAMOND", "ASCEND", "IMMORTAL", "RADIANT"];
+  const MAPS   = ["DUST_OMEGA", "VOIDPORT", "SILO-19", "NEON_YARD", "SPLINTER", "CATHODE", "RIFTLINE"];
+  const PATCH  = ["balance", "stability", "anti-cheat", "UI", "audio", "matchmaking", "hitboxes", "movement", "ranked"];
+
+  // ====== Resize ======
+  function resize(){
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const w = window.innerWidth, h = window.innerHeight;
+    c.width = Math.floor(w*dpr);
+    c.height = Math.floor(h*dpr);
+    c.style.width = "100%";
+    c.style.height = "100%";
+
+    prev.width = c.width;
+    prev.height = c.height;
+
+    // small buffer ~ 1/6 resolution (fast)
+    small.width = Math.max(240, Math.floor(c.width/6));
+    small.height = Math.max(140, Math.floor(c.height/6));
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ptx.setTransform(1,0,0,1,0,0);
+  }
+  window.addEventListener("resize", resize, { passive:true });
+
+  // ====== Helpers ======
+  function cssVar(name){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function clearToBg(){
+    ctx.fillStyle = cssVar("--bg");
+    ctx.fillRect(0,0,c.width,c.height);
+  }
+
+  function microcutSchedule(now){
+    microNext = now + lerp(MICRO_MIN, MICRO_MAX, R());
+  }
+  function macroSchedule(now){
+    macroNext = now + lerp(MACRO_MIN, MACRO_MAX, R());
+  }
+
+  // ====== Spawn modules ======
+  function spawnDamage(){
+    const w = c.width, h = c.height;
+    const x = R()*w, y = R()*h;
+    const sign = (R() < 0.65) ? "-" : "+";
+    const amt = rint(4, 240);
+    const crit = (R() < (0.12 + 0.28*heat));
+    const txt = crit ? `${sign}${amt} CRIT` : `${sign}${amt}`;
+    damageNums.push({
+      x, y,
+      vx: lerp(-60, 60, R()),
+      vy: lerp(-190, -40, R()),
+      life: lerp(0.35, 1.2, R()),
+      age: 0,
+      size: crit ? lerp(36, 86, R()) : lerp(18, 52, R()),
+      rot: lerp(-0.6, 0.6, R()),
+      alpha: 1,
+      crit
+    });
+  }
+
+  function spawnToast(){
+    const w = c.width, h = c.height;
+    const side = (R() < 0.5) ? 0 : 1;
+    const x = side ? w - 14 : 14;
+    const y = lerp(60, h-100, R());
+    const kind = rpick(["ACHIEVEMENT","WARNING","MISSION","XP","KILL","SYSTEM"]);
+    const line = (() => {
+      if (kind === "ACHIEVEMENT") return `UNLOCKED: ${rpick(["NO_SCOPE","TOUCH_GRASS","MEMORY_LEAK","GODMODE","PREDATOR","SPEEDRUNNER"])}`;
+      if (kind === "MISSION") return `OBJECTIVE: ${rpick(["CAPTURE NODE", "DEFUSE", "EXFIL", "HOLD ZONE", "SURVIVE", "UPLOAD"])}`;
+      if (kind === "XP") return `XP +${rint(10, 1200)}  ·  RANK ${rpick(RANKS)}`;
+      if (kind === "KILL") return `${rpick(["YOU","ALLY","ENEMY"])} ELIMINATED · ${rpick(WEAPONS)}`;
+      if (kind === "SYSTEM") return `${rpick(STATUS)} · ${rpick(FLAGS)} · ${rpick(CODES)}`;
+      return `WARNING: ${rpick(["DESYNC", "INTEGRITY", "INPUT SPOOF", "LATENCY", "KERNEL TRACE"])}`;
+    })();
+    toasts.push({
+      x, y, side,
+      kind, line,
+      life: lerp(1.2, 3.0, R()),
+      age: 0,
+      w: lerp(220, 520, R()),
+      h: lerp(26, 48, R())
+    });
+  }
+
+  function spawnPopup(){
+    const w = c.width, h = c.height;
+    const pw = lerp(240, 520, R());
+    const ph = lerp(140, 340, R());
+    const x = clamp(lerp(-80, w - pw + 80, R()), 0, w - pw);
+    const y = clamp(lerp(-60, h - ph + 60, R()), 0, h - ph);
+    const title = rpick([
+      "ANTI-CHEAT ALERT",
+      "EULA UPDATE",
+      "NETWORK DIAGNOSTIC",
+      "GRAPHICS DRIVER",
+      "RANKED ELIGIBILITY",
+      "MATCHMAKING NOTICE"
+    ]);
+    const body = rpick([
+      "Integrity check failed.",
+      "Session flagged for review.",
+      "Input device mismatch detected.",
+      "Frame pacing unstable.",
+      "Packet jitter above baseline.",
+      "Untrusted module loaded."
+    ]);
+    const btnA = rpick(["ACCEPT","RETRY","CONTINUE","OK","APPEAL"]);
+    const btnB = rpick(["CANCEL","QUIT","IGNORE","DETAILS","REPORT"]);
+    popups.push({
+      x,y,w:pw,h:ph,
+      title, body, btnA, btnB,
+      life: lerp(1.0, 3.2, R()),
+      age: 0,
+      shake: lerp(0, 10, heat) * (R()<0.6 ? 1 : 0)
+    });
+  }
+
+  function spawnChat(){
+    const w = c.width, h = c.height;
+    const name = rpick(["xXKERNELXx","LATENCY_LORD","aimbot?","m1croStutter","t0xic","packetloss","deskfan","r0llback","plsnerf"]);
+    const msg = rpick([
+      "HITREG IS FAKE",
+      "bro this netcode",
+      "report him",
+      "no shot",
+      "gg go next",
+      "why am i rubberbanding",
+      "EAC just blinked",
+      "my fps is melting",
+      "YOU SEEING THIS??"
+    ]);
+    chat.push({ name, msg, age:0, life: lerp(1.8, 4.2, R()) });
+    if (chat.length > 10) chat.shift();
+  }
+
+  function spawnPatchLine(){
+    const tag = rpick(PATCH);
+    const sign = rpick(["+", "-", "*"]);
+    const item = rpick([
+      "Adjusted recoil curve",
+      "Optimized shader compile",
+      "Fixed rare crash on alt-tab",
+      "Nerfed movement tech",
+      "Improved hitbox alignment",
+      "Added telemetry",
+      "Reduced peeker's advantage",
+      "Reworked aim assist",
+      "Tuned matchmaking",
+      "Enabled kernel-mode module"
+    ]);
+    patchLines.push({ txt: `${sign} ${tag}: ${item}`, age:0, life: lerp(2.0, 5.0, R()) });
+    if (patchLines.length > 18) patchLines.shift();
+  }
+
+  // ====== Draw modules ======
+  function drawHUD(w,h, t, m){
+    // top bar
+    ctx.strokeStyle = cssVar("--line");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(14, 18);
+    ctx.lineTo(w-14, 18);
+    ctx.stroke();
+
+    const fps = Math.floor(lerp(22, 240, 1-heat) + 10*Math.sin(t*3));
+    const ping = Math.floor(lerp(8, 190, heat) + 20*Math.sin(t*1.4));
+    const rank = rpick(RANKS);
+    const map = rpick(MAPS);
+
+    ctx.fillStyle = cssVar("--fg");
+    ctx.font = `${Math.max(12, Math.floor(Math.min(w,h)*0.018))}px ${rpick(FONTS)}`;
+    ctx.fillText(`MAP: ${map}`, 16, 42);
+    ctx.fillText(`RANK: ${rank}`, 16, 62);
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.fillText(`FPS ${fps}  ·  PING ${ping}ms  ·  TICK ${Math.floor(lerp(30, 128, 1-heat))}`, 16, 82);
+
+    // minimap-ish
+    const mm = Math.floor(Math.min(w,h)*0.18);
+    const mx = w - mm - 18;
+    const my = 28;
+    ctx.strokeStyle = `rgba(235,240,255,${lerp(0.10,0.26,1-heat).toFixed(3)})`;
+    ctx.strokeRect(mx+0.5, my+0.5, mm, mm);
+    // grid
+    const g = Math.max(10, Math.floor(mm/6));
+    ctx.beginPath();
+    for (let x=mx; x<=mx+mm; x+=g){ ctx.moveTo(x+0.5, my); ctx.lineTo(x+0.5, my+mm); }
+    for (let y=my; y<=my+mm; y+=g){ ctx.moveTo(mx, y+0.5); ctx.lineTo(mx+mm, y+0.5); }
+    ctx.stroke();
+    // blips
+    const blips = rint(3, 16);
+    for (let i=0;i<blips;i++){
+      const bx = mx + R()*mm;
+      const by = my + R()*mm;
+      ctx.fillStyle = (R()<0.55) ? cssVar("--bad") : cssVar("--good");
+      ctx.fillRect(bx, by, 2, 2);
+    }
+
+    // crosshair
+    const cx = w*0.5, cy = h*0.5;
+    ctx.strokeStyle = `rgba(235,240,255,${lerp(0.08,0.24, 1-heat).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(cx-12, cy); ctx.lineTo(cx+12, cy);
+    ctx.moveTo(cx, cy-12); ctx.lineTo(cx, cy+12);
+    ctx.stroke();
+
+    // bottom ammo/health
+    const barW = Math.floor(w*0.26);
+    const bx = 16, by = h-44;
+    const hp = clamp(1 - heat*0.72 + 0.12*Math.sin(t*2.7), 0, 1);
+    const ammo = clamp(0.8 - heat*0.55 + 0.15*Math.sin(t*1.9), 0, 1);
+
+    ctx.strokeStyle = cssVar("--line");
+    ctx.strokeRect(bx+0.5, by+0.5, barW, 10);
+    ctx.strokeRect(bx+0.5, by+16.5, barW, 10);
+
+    ctx.fillStyle = cssVar("--good");
+    ctx.fillRect(bx, by, Math.floor(barW*hp), 10);
+    ctx.fillStyle = cssVar("--warn");
+    ctx.fillRect(bx, by+16, Math.floor(barW*ammo), 10);
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.font = `${Math.max(11, Math.floor(Math.min(w,h)*0.016))}px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.fillText(`HP ${Math.floor(hp*100)}%`, bx+barW+10, by+9);
+    ctx.fillText(`AMMO ${Math.floor(ammo*100)}%`, bx+barW+10, by+25);
+  }
+
+  function drawDamage(dt){
+    for (let i=damageNums.length-1;i>=0;i--){
+      const d = damageNums[i];
+      d.age += dt;
+      const k = d.age / d.life;
+      if (k >= 1){ damageNums.splice(i,1); continue; }
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.alpha = 1 - smoothstep(0.55, 1.0, k);
+
+      ctx.save();
+      ctx.globalAlpha = d.alpha * lerp(0.5, 1.0, 1-heat);
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rot);
+
+      ctx.font = `900 ${Math.floor(d.size)}px ${d.crit ? "Impact, Haettenschweiler, Arial Black, sans-serif" : "ui-monospace, Menlo, Consolas, monospace"}`;
+      ctx.fillStyle = d.crit ? cssVar("--bad") : cssVar("--warn");
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = Math.max(2, Math.floor(d.size*0.08));
+      ctx.strokeText(d.txt, 0, 0);
+      ctx.fillText(d.txt, 0, 0);
+
+      ctx.restore();
+    }
+  }
+
+  function drawToasts(dt){
+    for (let i=toasts.length-1;i>=0;i--){
+      const t = toasts[i];
+      t.age += dt;
+      const k = t.age / t.life;
+      if (k >= 1){ toasts.splice(i,1); continue; }
+
+      const inOut = (k < 0.15) ? smoothstep(0,0.15,k) : (k > 0.85 ? 1 - smoothstep(0.85,1,k) : 1);
+      const wob = (t.side ? -1 : 1) * lerp(0, 18, (1-inOut)) * (0.3 + 0.7*R());
+      const x = t.side ? (t.x - t.w - wob) : (t.x + wob);
+
+      ctx.save();
+      ctx.globalAlpha = lerp(0.2, 1.0, inOut);
+      ctx.fillStyle = "rgba(10,12,18,0.62)";
+      ctx.strokeStyle = cssVar("--line");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, t.y, t.w, t.h, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = cssVar("--dim");
+      ctx.font = `700 11px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(t.kind, x+10, t.y+14);
+
+      ctx.fillStyle = cssVar("--fg");
+      ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(t.line, x+10, t.y+32);
+
+      ctx.restore();
+    }
+  }
+
+  function drawPopups(dt){
+    for (let i=popups.length-1;i>=0;i--){
+      const p = popups[i];
+      p.age += dt;
+      const k = p.age / p.life;
+      if (k >= 1){ popups.splice(i,1); continue; }
+
+      const inOut = (k < 0.12) ? smoothstep(0,0.12,k) : (k > 0.88 ? 1 - smoothstep(0.88,1,k) : 1);
+      const sh = p.shake ? (Math.sin(p.age*42) * p.shake) : 0;
+      const x = p.x + sh;
+      const y = p.y + Math.cos(p.age*37)* (p.shake? p.shake*0.6 : 0);
+
+      ctx.save();
+      ctx.globalAlpha = lerp(0.25, 1.0, inOut);
+
+      ctx.fillStyle = "rgba(8,10,14,0.78)";
+      ctx.strokeStyle = `rgba(235,240,255,${lerp(0.14,0.32,heat).toFixed(3)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, p.w, p.h, 10);
+      ctx.fill();
+      ctx.stroke();
+
+      // title bar
+      ctx.fillStyle = `rgba(235,240,255,${lerp(0.06,0.16,heat).toFixed(3)})`;
+      ctx.fillRect(x, y, p.w, 28);
+
+      ctx.fillStyle = cssVar("--fg");
+      ctx.font = `700 12px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(p.title, x+10, y+18);
+
+      ctx.fillStyle = cssVar("--dim");
+      ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(p.body, x+10, y+54);
+
+      // “evidence” block
+      ctx.fillStyle = `rgba(0,0,0,0.35)`;
+      ctx.fillRect(x+10, y+70, p.w-20, p.h-120);
+
+      ctx.fillStyle = cssVar("--dim");
+      ctx.font = `11px ui-monospace, Menlo, Consolas, monospace`;
+      const ev = [
+        `module: ${rpick(FLAGS)}`,
+        `hash: ${rpick(CODES)}-${rint(1000,9999)}`,
+        `tick: ${rint(10,128)}  jitter: ${rint(0,42)}ms`,
+        `device: HID_${rint(10,99)}  input: ${rpick(["RAW","EMUL","SPOOF"])}`,
+      ];
+      for (let j=0;j<ev.length;j++){
+        ctx.fillText(ev[j], x+18, y+92 + j*16);
+      }
+
+      // buttons
+      const by = y + p.h - 42;
+      ctx.strokeStyle = cssVar("--line");
+      ctx.strokeRect(x+10+0.5, by+0.5, 100, 26);
+      ctx.strokeRect(x+120+0.5, by+0.5, 100, 26);
+
+      ctx.fillStyle = cssVar("--fg");
+      ctx.fillText(p.btnA, x+20, by+18);
+      ctx.fillStyle = cssVar("--dim");
+      ctx.fillText(p.btnB, x+130, by+18);
+
+      ctx.restore();
+    }
+  }
+
+  function drawChat(dt, w, h){
+    // bottom-left chat pane
+    const x = 16, y = h - 210;
+    ctx.save();
+    ctx.globalAlpha = lerp(0.35, 0.80, smoothstep(0.15,0.85,heat));
+    ctx.fillStyle = "rgba(10,12,18,0.55)";
+    ctx.strokeStyle = cssVar("--line");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, 360, 188, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.font = `700 11px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.fillText("TEAM CHAT", x+12, y+18);
+
+    ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+    for (let i=0;i<chat.length;i++){
+      const lineY = y+42 + i*14;
+      ctx.fillStyle = "rgba(140,190,255,0.82)";
+      ctx.fillText(chat[i].name + ":", x+12, lineY);
+      ctx.fillStyle = cssVar("--fg");
+      ctx.fillText(chat[i].msg, x+12 + 120, lineY);
+      chat[i].age += dt;
+    }
+    ctx.restore();
+  }
+
+  function drawPatch(dt, w){
+    // right-side patch notes spam
+    const x = w - 420, y = 110;
+    ctx.save();
+    ctx.globalAlpha = lerp(0.18, 0.85, smoothstep(0.30,0.95,heat));
+    ctx.fillStyle = "rgba(10,12,18,0.45)";
+    ctx.strokeStyle = cssVar("--line");
+    ctx.beginPath();
+    ctx.roundRect(x, y, 404, 280, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.font = `700 11px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.fillText(`PATCH ${rint(1,9)}.${rint(0,9)}.${rint(0,9)}  ·  ${rpick(["HOTFIX","LIVE","ROLLBACK","EXPERIMENTAL"])}`, x+12, y+18);
+
+    ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+    for (let i=0;i<patchLines.length;i++){
+      const p = patchLines[i];
+      p.age += dt;
+      ctx.fillStyle = (p.txt.startsWith("-")) ? cssVar("--bad") : (p.txt.startsWith("+") ? cssVar("--good") : cssVar("--fg"));
+      ctx.fillText(p.txt, x+12, y+42 + i*14);
+    }
+    ctx.restore();
+  }
+
+  // ====== Sludge engine: feedback + corruption ======
+  function feedbackPass(w,h, dt){
+    // draw previous frame back with transform = sludge
+    ctx.save();
+
+    // base
+    ctx.fillStyle = cssVar("--bg");
+    ctx.fillRect(0,0,w,h);
+
+    // feedback intensity grows with heat
+    const fb = lerp(0.86, 0.98, smoothstep(0.10,0.95,heat));
+    ctx.globalAlpha = fb;
+
+    // transform jitter
+    const ang = lerp(-0.02, 0.03, R()) * lerp(0.2, 1.0, heat);
+    const sc  = 1 + lerp(-0.012, 0.03, R()) * lerp(0.3, 1.0, heat);
+    const tx  = lerp(-18, 18, R()) * lerp(0.2, 1.0, heat);
+    const ty  = lerp(-14, 14, R()) * lerp(0.2, 1.0, heat);
+
+    ctx.translate(w*0.5 + tx, h*0.5 + ty);
+    ctx.rotate(ang);
+    ctx.scale(sc, sc);
+    ctx.translate(-w*0.5, -h*0.5);
+
+    // composite mode changes (internet violence)
+    const comps = ["source-over","screen","overlay","difference","lighter","multiply"];
+    ctx.globalCompositeOperation = rpick(comps);
+
+    ctx.drawImage(prev, 0, 0);
+
+    ctx.restore();
+
+    // occasional tear bands
+    const tearN = Math.floor(lerp(0, 7, smoothstep(0.35,0.98,heat)));
+    for (let i=0;i<tearN;i++){
+      if (R() > 0.35 + 0.45*heat) continue;
+      const y = Math.floor(R()*h);
+      const th = Math.floor(lerp(6, 40, R()) * lerp(0.6, 1.4, heat));
+      const dx = Math.floor(lerp(-80, 80, R()) * lerp(0.4, 1.2, heat));
+      ctx.globalAlpha = lerp(0.35, 0.85, R());
+      ctx.drawImage(prev, 0, y, w, th, dx, y, w, th);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function corruptionOps(w,h, t){
+    // Downsample current frame for cheap image ops
+    stx.clearRect(0,0,small.width, small.height);
+    stx.drawImage(c, 0,0, w,h, 0,0, small.width, small.height);
+
+    // Get pixels sometimes (not every frame) for performance
+    const doPixels = (R() < lerp(0.06, 0.28, heat));
+    if (!doPixels) return;
+
+    const img = stx.getImageData(0,0,small.width, small.height);
+    const d = img.data;
+
+    // choose an operation based on mode
+    const opPool = (mode === "BOOT") ? ["posterize","scanline"] :
+                   (mode === "ANTICHEAT") ? ["threshold","invert","difference"] :
+                   (mode === "PATCHNOTES") ? ["posterize","chswap","scanline"] :
+                   (mode === "GLITCHLOOP") ? ["threshold","posterize","invert","chswap","difference"] :
+                   ["posterize","threshold","chswap","scanline","difference"];
+
+    const op = rpick(opPool);
+    const posterLevels = rint(3, 6);
+    const thr = lerp(70, 170, R()) * lerp(0.8, 1.2, heat);
+
+    for (let i=0;i<d.length;i+=4){
+      let r=d[i], g=d[i+1], b=d[i+2];
+
+      if (op === "invert"){
+        r = 255-r; g=255-g; b=255-b;
+      } else if (op === "chswap"){
+        // swap channels in a slightly chaotic way
+        if (R()<0.5){ const tmp=r; r=g; g=tmp; }
+        if (R()<0.3){ const tmp=b; b=g; g=tmp; }
+      } else if (op === "threshold"){
+        const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        const v = (lum > thr) ? 255 : 0;
+        r=g=b=v;
+      } else if (op === "posterize"){
+        const step = 255/(posterLevels-1);
+        r = Math.round(r/step)*step;
+        g = Math.round(g/step)*step;
+        b = Math.round(b/step)*step;
+      } else if (op === "difference"){
+        // pseudo difference wobble
+        r = Math.abs(r - (g*0.85))|0;
+        g = Math.abs(g - (b*0.85))|0;
+        b = Math.abs(b - (r*0.85))|0;
+      } else if (op === "scanline"){
+        // faint scanline by darkening every few rows
+        // handled below by row check
+      }
+
+      d[i]=r; d[i+1]=g; d[i+2]=b; // alpha unchanged
+    }
+
+    if (op === "scanline"){
+      const sw = small.width;
+      for (let y=0;y<small.height;y++){
+        if ((y % rint(3,6)) === 0){
+          for (let x=0;x<sw;x++){
+            const idx = (y*sw + x)*4;
+            d[idx]   = (d[idx]*0.72)|0;
+            d[idx+1] = (d[idx+1]*0.72)|0;
+            d[idx+2] = (d[idx+2]*0.72)|0;
+          }
+        }
+      }
+    }
+
+    stx.putImageData(img, 0,0);
+
+    // Blend the corrupted small buffer back on top (scaled)
+    ctx.save();
+    ctx.globalAlpha = lerp(0.18, 0.62, heat);
+    ctx.globalCompositeOperation = rpick(["overlay","screen","difference","lighter","source-over"]);
+    ctx.imageSmoothingEnabled = false;
+    const sx = Math.floor(lerp(-40, 40, R()) * heat);
+    const sy = Math.floor(lerp(-30, 30, R()) * heat);
+    ctx.drawImage(small, 0,0, small.width, small.height, sx, sy, w, h);
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // ====== Macro texture shifts ======
+  function pickMode(){
+    // Weighted by heat to bias toward collapse
+    const p = heat;
+    if (p < 0.18) return "BOOT";
+    if (p < 0.42) return rpick(["HUD_FEED","PATCHNOTES","KILLFEED"]);
+    if (p < 0.70) return rpick(["MATCH","ANTICHEAT","PATCHNOTES","KILLFEED"]);
+    return rpick(["GLITCHLOOP","ANTICHEAT","KILLFEED","PATCHNOTES"]);
+  }
+
+  function panicBurst(dt){
+    // 2s of extreme density
+    const bursts = Math.floor(lerp(2, 14, heat));
+    for (let i=0;i<bursts;i++){
+      spawnDamage();
+      if (R()<0.55) spawnToast();
+      if (R()<0.35) spawnPopup();
+      if (R()<0.45) spawnChat();
+      if (R()<0.55) spawnPatchLine();
+    }
+  }
+
+  // ====== Main tick ======
+  function tick(ts){
+    if (!running) return;
+    if (!t0) t0 = ts;
+    const elapsed = (ts - t0)/1000;
+    const t = elapsed;
+
+    if (elapsed >= CRASH_FREEZE_AT){
+      // freeze on last frame (crash)
+      running = false;
+      corner.style.opacity = "1";
+      // stamp crash text
+      const w=c.width, h=c.height;
+      ctx.save();
+      ctx.globalAlpha = 0.88;
+      ctx.fillStyle = "rgba(0,0,0,0.62)";
+      ctx.fillRect(0,0,w,h);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = cssVar("--bad");
+      ctx.font = `900 ${Math.max(18, Math.floor(Math.min(w,h)*0.05))}px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText("FATAL ERROR", 24, 84);
+      ctx.fillStyle = cssVar("--fg");
+      ctx.font = `${Math.max(12, Math.floor(Math.min(w,h)*0.02))}px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(`EXCEPTION: UI_THREAD_STARVATION  ·  CODE: ${rpick(CODES)}  ·  SESSION: ${seed}`, 24, 118);
+      ctx.fillStyle = cssVar("--dim");
+      ctx.fillText("PRESS ESC TO RESET", 24, 146);
+      ctx.restore();
+      return;
+    }
+
+    // dt
+    const dt = (tick._last ? (ts - tick._last)/1000 : 1/60);
+    tick._last = ts;
+
+    // heat ramp + breathing drops
+    const tn = clamp(elapsed / DURATION, 0, 1);
+    const ramp = smoothstep(0.03, 0.92, tn);
+    const breath = 0.06 * Math.sin(t*0.9) + 0.04 * Math.sin(t*2.3);
+    heat = clamp(ramp + breath, 0, 1);
+
+    // scheduling
+    if (t >= macroNext){
+      mode = pickMode();
+      macroSchedule(t);
+      // occasional panic burst on macro switch
+      if (R() < lerp(0.10, 0.55, heat)) panicBurst(dt);
+    }
+    if (t >= microNext){
+      // microcut = inject abrupt density + sudden compositing change
+      microcutSchedule(t);
+      const n = Math.floor(lerp(1, 10, heat));
+      for (let i=0;i<n;i++){
+        if (R()<0.75) spawnDamage();
+        if (R()<0.35) spawnToast();
+        if (R()<0.22) spawnPopup();
+        if (R()<0.35) spawnChat();
+        if (R()<0.45) spawnPatchLine();
+      }
+      // extra if we're in certain modes
+      if (mode === "ANTICHEAT" && R() < 0.65) spawnPopup();
+      if (mode === "PATCHNOTES" && R() < 0.75) spawnPatchLine();
+      if (mode === "KILLFEED" && R() < 0.65) spawnToast();
+    }
+
+    const w = c.width, h = c.height;
+
+    // 1) feedback base (sludge)
+    feedbackPass(w,h,dt);
+
+    // 2) draw fresh HUD skeleton
+    drawHUD(w,h,t,mode);
+
+    // 3) mode-specific overlays
+    if (mode === "ANTICHEAT"){
+      // huge warning stamp spam
+      ctx.save();
+      ctx.globalAlpha = lerp(0.12, 0.55, heat);
+      ctx.translate(w*0.5, h*0.5);
+      ctx.rotate(lerp(-0.35, 0.35, R()));
+      ctx.font = `900 ${Math.floor(lerp(34, 160, heat))}px Impact, Arial Black, sans-serif`;
+      ctx.fillStyle = cssVar("--bad");
+      ctx.fillText("INTEGRITY VIOLATION", -w*0.42, 0);
+      ctx.restore();
+    } else if (mode === "PATCHNOTES"){
+      // big “hotfix” band
+      ctx.save();
+      ctx.globalAlpha = lerp(0.10, 0.40, heat);
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(0, Math.floor(h*0.35), w, Math.floor(h*0.09));
+      ctx.fillStyle = cssVar("--warn");
+      ctx.font = `900 ${Math.floor(lerp(18, 74, heat))}px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText("HOTFIX DEPLOYING · PLEASE STAND BY · ROLLBACK POSSIBLE", 20, Math.floor(h*0.41));
+      ctx.restore();
+    } else if (mode === "GLITCHLOOP"){
+      // aggressive zoom crop on top
+      ctx.save();
+      ctx.globalAlpha = lerp(0.10, 0.30, heat);
+      const z = lerp(1.02, 1.18, heat);
+      ctx.translate(w*0.5, h*0.5);
+      ctx.scale(z, z);
+      ctx.translate(-w*0.5, -h*0.5);
+      ctx.drawImage(prev, 0,0);
+      ctx.restore();
+    }
+
+    // 4) draw module particles
+    drawDamage(dt);
+    drawToasts(dt);
+    drawPopups(dt);
+
+    // 5) chat + patch panes (often)
+    if (R() < lerp(0.20, 0.75, heat)) drawChat(dt, w, h);
+    if (R() < lerp(0.25, 0.85, heat)) drawPatch(dt, w);
+
+    // 6) killfeed strip (top-right)
+    if (elapsed > 10){
+      const n = Math.floor(lerp(1, 8, smoothstep(0.2,0.9,heat)));
+      ctx.save();
+      ctx.globalAlpha = lerp(0.20, 0.70, smoothstep(0.2,0.95,heat));
+      ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+      for (let i=0;i<n;i++){
+        const y = 62 + i*16;
+        const a = rpick(["YOU","ALLY","ENEMY"]);
+        const b = rpick(["ENEMY","ALLY","YOU"]);
+        const wpn = rpick(WEAPONS);
+        ctx.fillStyle = (a==="YOU") ? cssVar("--good") : (a==="ENEMY" ? cssVar("--bad") : cssVar("--fg"));
+        ctx.fillText(`${a} ▸ ${b}  (${wpn})`, w - 260, y);
+      }
+      ctx.restore();
+    }
+
+    // 7) corruption ops (periodic pixel violence)
+    corruptionOps(w,h,t);
+
+    // 8) subtle scan noise overlay (makes it feel “streamed”)
+    ctx.save();
+    ctx.globalAlpha = lerp(0.06, 0.18, heat);
+    ctx.globalCompositeOperation = "overlay";
+    ctx.fillStyle = `rgba(255,255,255,${lerp(0.05,0.12,heat).toFixed(3)})`;
+    for (let i=0;i<10;i++){
+      const y = Math.floor(R()*h);
+      ctx.fillRect(0, y, w, 1);
+    }
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+
+    // 9) persist current frame into prev buffer
+    ptx.drawImage(c, 0, 0);
+
+    raf = requestAnimationFrame(tick);
+  }
+
+  // Polyfill: roundRect (older browsers)
+  if (!CanvasRenderingContext2D.prototype.roundRect){
+    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+      r = Math.min(r, w/2, h/2);
+      this.beginPath();
+      this.moveTo(x+r, y);
+      this.arcTo(x+w, y, x+w, y+h, r);
+      this.arcTo(x+w, y+h, x, y+h, r);
+      this.arcTo(x, y+h, x, y, r);
+      this.arcTo(x, y, x+w, y, r);
+      this.closePath();
+      return this;
+    };
+  }
+
+  // ====== Control ======
+  function reset(){
+    running = false;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    tick._last = 0;
+
+    heat = 0;
+    microNext = 0;
+    macroNext = 0;
+    mode = "BOOT";
+
+    damageNums.length = 0;
+    toasts.length = 0;
+    popups.length = 0;
+    chat.length = 0;
+    patchLines.length = 0;
+
+    // clear buffers
+    resize();
+    clearToBg();
+    ptx.fillStyle = cssVar("--bg");
+    ptx.fillRect(0,0,prev.width,prev.height);
+
+    startOverlay.style.display = "flex";
+    corner.style.opacity = "0";
+    t0 = 0;
+  }
+
+  function start(){
+    if (running) return;
+
+    seed = hashSeedFromNow();
+    rng = mulberry32(seed);
+
+    startOverlay.style.display = "none";
+    corner.style.opacity = "1";
+
+    // schedule clocks
+    const now = 0;
+    microcutSchedule(now);
+    macroSchedule(now);
+
+    // initial content burst
+    for (let i=0;i<10;i++) spawnDamage();
+    for (let i=0;i<4;i++) spawnToast();
+    for (let i=0;i<2;i++) spawnPopup();
+    for (let i=0;i<6;i++) spawnPatchLine();
+    for (let i=0;i<3;i++) spawnChat();
+
+    // seed prev with a clean frame
+    clearToBg();
+    ptx.drawImage(c, 0, 0);
+
+    running = true;
+    raf = requestAnimationFrame(tick);
+  }
+
+  beginBtn.addEventListener("click", start);
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") reset();
+  });
+
+  // init
+  resize();
+  reset();
+
+})();
+</script>
+</body>
+</html>
