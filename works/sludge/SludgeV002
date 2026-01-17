@@ -1,0 +1,2184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SLUDGE OS — Gamer x Commercial (Oil/Water)</title>
+<style>
+  :root{
+    --bg:#05060a;
+    --fg: rgba(235,240,255,0.86);
+    --dim: rgba(235,240,255,0.52);
+    --line: rgba(235,240,255,0.18);
+    --warn: rgba(255,230,140,0.88);
+    --bad: rgba(255,120,140,0.86);
+    --good: rgba(140,255,190,0.86);
+  }
+  html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;}
+  body{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    cursor:none; /* custom cursor rendered in canvas */
+  }
+  canvas{position:fixed; inset:0; width:100%; height:100%; display:block; background:var(--bg);}
+
+  #start{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background: radial-gradient(ellipse at center, rgba(235,240,255,0.06), rgba(0,0,0,0) 55%);
+  }
+  #panel{
+    display:flex; flex-direction:column; gap:12px; align-items:center;
+    padding:18px 22px;
+    border:1px solid rgba(235,240,255,0.18);
+    background: rgba(10,12,18,0.62);
+    backdrop-filter: blur(6px);
+  }
+  #title{letter-spacing:0.22em; font-size:13px; color: rgba(235,240,255,0.74);}
+  #begin{
+    appearance:none; border:1px solid rgba(235,240,255,0.28);
+    background: rgba(235,240,255,0.07);
+    color: rgba(235,240,255,0.86);
+    padding:10px 16px;
+    font-size:12px;
+    letter-spacing:0.14em;
+    cursor:pointer;
+  }
+  #begin:hover{ background: rgba(235,240,255,0.10); }
+  #hint{font-size:11px; color: rgba(235,240,255,0.56); letter-spacing:0.02em; text-align:center; max-width:56ch;}
+  #corner{
+    position:fixed; left:14px; bottom:12px;
+    font-size:11px; color: rgba(235,240,255,0.56);
+    letter-spacing:0.02em;
+    opacity:0; transition: opacity 160ms linear;
+    pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="start">
+  <div id="panel">
+    <div id="title">SLUDGE OS</div>
+    <button id="begin">BEGIN</button>
+    <div id="hint">gamer sludge × commercial sludge (oil/water) · hostile audio · infinite spiral · fullscreen attempt · ESC reset</div>
+  </div>
+</div>
+
+<div id="corner">ESC: RESET</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // =========================
+  // Canvas + Buffers
+  // =========================
+  const c = document.getElementById("c");
+  const ctx = c.getContext("2d", { alpha:false, desynchronized:true });
+
+  const startOverlay = document.getElementById("start");
+  const beginBtn = document.getElementById("begin");
+  const corner = document.getElementById("corner");
+
+  // Feedback buffer (whole frame)
+  const prev = document.createElement("canvas");
+  const ptx = prev.getContext("2d", { alpha:false, desynchronized:true });
+
+  // Downsample for corruption ops
+  const small = document.createElement("canvas");
+  const stx = small.getContext("2d", { willReadFrequently:true });
+
+  // Commercial layer (separate logic / layout)
+  const ad = document.createElement("canvas");
+  const atx = ad.getContext("2d", { alpha:true, desynchronized:true });
+
+  const adPrev = document.createElement("canvas");
+  const apx = adPrev.getContext("2d", { alpha:true, desynchronized:true });
+
+  // =========================
+  // RNG
+  // =========================
+  function hashSeedFromNow(){
+    const n = Date.now() >>> 0;
+    let x = n ^ 0x9e3779b9;
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    return x >>> 0;
+  }
+  function mulberry32(a){
+    return function(){
+      let t = a += 0x6D2B79F5;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  let seed = 1337;
+  let rng = mulberry32(seed);
+  const R = () => rng();
+  const rint = (a,b) => (a + Math.floor(R()*(b-a+1)));
+  const rpick = (arr) => arr[Math.floor(R()*arr.length)];
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const lerp = (a,b,t) => a + (b-a)*t;
+  const smoothstep = (a,b,x) => {
+    const t = clamp((x-a)/(b-a), 0, 1);
+    return t*t*(3-2*t);
+  };
+
+  function cssVar(name){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // Polyfill: roundRect
+  if (!CanvasRenderingContext2D.prototype.roundRect){
+    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+      r = Math.min(r, w/2, h/2);
+      this.beginPath();
+      this.moveTo(x+r, y);
+      this.arcTo(x+w, y, x+w, y+h, r);
+      this.arcTo(x+w, y+h, x, y+h, r);
+      this.arcTo(x, y+h, x, y, r);
+      this.arcTo(x, y, x+w, y, r);
+      this.closePath();
+      return this;
+    };
+  }
+
+  // =========================
+  // State
+  // =========================
+  let running = false;
+  let t0 = 0;
+  let raf = 0;
+
+  // Infinite spiral: keep rising, with cycles that never truly reset
+  // "heat" rises to ~1 and then oscillates, with periodic spikes
+  let heat = 0;            // 0..1
+  let spike = 0;           // transient spike
+  let mode = "BOOT";
+
+  // Clocks
+  let microNext = 0;
+  let macroNext = 0;
+  const MICRO_MIN = 0.14, MICRO_MAX = 0.70;
+  const MACRO_MIN = 5.0,  MACRO_MAX = 11.0;
+
+  // Cursor + tracers
+  let mx = 0, my = 0, mDown = false;
+  const tracers = []; // {x,y,vx,vy,life,age,kind,sz,rot,alpha}
+  let cursorStyle = 0; // 0..3
+
+  // Gamer modules (varied variants)
+  const damageNums = [];
+  const toasts = [];
+  const popups = [];
+  const teamChat = [];
+  const patchLines = [];
+  const killFeed = [];
+
+  // Streamer chat overlay
+  const streamerChat = []; // {name,msg,age,life,badge}
+
+  // Commercial modules (oil/water)
+  const adCards = [];      // ecommerce product cards
+  const adBanners = [];    // clean banners / CTA bars
+  const adTicker = [];     // promo ticker tape fragments
+  const adReceipts = [];   // receipt-like strips
+  const adTimers = [];     // countdown timers
+
+  // Fonts (system)
+  const FONTS = [
+    "ui-monospace, Menlo, Consolas, monospace",
+    "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    "Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif",
+    "'Arial Black', Gadget, sans-serif",
+  ];
+  const UI_FONTS = [
+    "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    "ui-monospace, Menlo, Consolas, monospace",
+  ];
+  const COMM_FONTS = [
+    "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    "'Trebuchet MS', Verdana, Arial, sans-serif",
+    "'Segoe UI', Tahoma, Arial, sans-serif",
+  ];
+
+  // Gamer lexicon
+  const WEAPONS = ["MK-7","VULCAN","SABLE","FALCON","KITE-9","RIPSAW","NEBULA","KRAKEN","GHOST","ARC-2"];
+  const STATUS  = ["OK","WARN","VIOLATION","SYNC","DESYNC","PACKET_LOSS","TIMEOUT","RETRY","LOCKED","INVALID"];
+  const FLAGS   = ["AIM_ASSIST","HITREG","NETCODE","RECOIL","INPUT_LAG","FPS_DROP","GPU_STALL","EAC","VAC","KERNEL"];
+  const CODES   = ["0x0A7F","0xDEAD","0xC0DE","0xBEEF","0xF00D","0x1337","0xFEED","0xBADC0DE"];
+  const RANKS   = ["BRONZE","SILVER","GOLD","PLAT","DIAMOND","ASCEND","IMMORTAL","RADIANT"];
+  const MAPS    = ["DUST_OMEGA","VOIDPORT","SILO-19","NEON_YARD","SPLINTER","CATHODE","RIFTLINE"];
+
+  const CHAT_NAMES = ["xXKERNELXx","LATENCY_LORD","aimbot?","m1croStutter","t0xic","packetloss","deskfan","r0llback","plsnerf","rngsus","hitbox??"];
+  const CHAT_MSGS = [
+    "HITREG IS FAKE","bro this netcode","report him","no shot","gg go next",
+    "why am i rubberbanding","EAC just blinked","my fps is melting","YOU SEEING THIS??",
+    "input feels cursed","who patched this","i got ghost bullets"
+  ];
+
+  // Streamer overlay lexicon
+  const STREAM_BADGES = ["VIP","MOD","SUB","GIFT","HYPE","PRIME"];
+  const STREAM_NAMES  = ["chatG0d","kappa","sweatlord","midrange","crunchy","uifragment","aimtrainer","moments","scrollwheel","deadzone"];
+  const STREAM_MSGS = [
+    "NO WAY","CLIP THAT","aim assist??","lag spike","bro is cooking","this is unwatchable",
+    "ads again??","W","L","skill issue","BUFF WHEN","nerf pls","??","he's hacking","DESYNC","KEKW"
+  ];
+
+  // Commercial sludge lexicon (clean-but-toxic)
+  const BRANDS = ["NEO™","HYPERBUY","GLOWMART","FASTSHIP","KLEENCORE","BYTEBASKET","PRIME+","ULTRADEAL","SOFTLUX","LOUDLY"];
+  const PRODUCT = ["PRO GAMER CHAIR","RGB AIR™","ENERGY GEL","SKIN BUNDLE","STREAM DECK","AIM TRAINER","WIRED MOUSE","HEADSET MAX","MYSTERY BOX","BATTLE PASS+"];
+  const CTA = ["BUY NOW","ADD TO CART","UPGRADE","SUBSCRIBE","LIMITED DROP","FREE TRIAL","CLAIM","UNLOCK","CHECKOUT","SPIN TO WIN"];
+  const DISCLAIMERS = [
+    "terms apply","limited time","while supplies last","auto-renews","results may vary",
+    "not available in all regions","final sale","see details","subject to change","no refunds"
+  ];
+  const PRICES = ["$9.99","$14.99","$29.99","$49.99","$79.99","$119.99","$199.99","$299.99","$0.99","$1.99"];
+  const PROMOS = ["FLASH","MEGA","HOT","NEW","TRENDING","VIRAL","BEST","TOP","PREMIUM","DELUXE"];
+
+  // Modes: gamer texture shifts
+  const MODES = ["BOOT","HUD_FEED","MATCH","ANTICHEAT","PATCHNOTES","KILLFEED","GLITCHLOOP","RESPAWN","SPECTATE"];
+
+  // Commercial "layouts" (oil/water: different composition rules)
+  const AD_LAYOUTS = ["STORE_GRID","CHECKOUT_FLOW","INFLUENCER_OVERLAY","COUPON_WALL","RECEIPT_RAIN"];
+  let adLayout = "STORE_GRID";
+  let adLayoutNext = 0;
+
+  // =========================
+  // Audio (hostile)
+  // =========================
+  let audioOK = false;
+  let ac = null, master = null, comp = null, filt = null, drive = null;
+  let beepNext = 0;
+  let speechNext = 0;
+  let noiseBuf = null;
+
+  function makeNoiseBuffer(){
+    const len = Math.floor(ac.sampleRate * 0.5);
+    const b = ac.createBuffer(1, len, ac.sampleRate);
+    const d = b.getChannelData(0);
+    for (let i=0;i<len;i++){
+      // harsh-ish noise: slight bias toward clicks
+      const n = (Math.random()*2 - 1);
+      d[i] = (Math.random() < 0.02) ? n*0.95 : n*0.25;
+    }
+    return b;
+  }
+
+  function makeWaveshaper(amount){
+    const k = amount;
+    const n = 2048;
+    const curve = new Float32Array(n);
+    for (let i=0;i<n;i++){
+      const x = (i*2)/n - 1;
+      curve[i] = ((1 + k) * x) / (1 + k*Math.abs(x));
+    }
+    return curve;
+  }
+
+  function initAudio(){
+    if (audioOK) return;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+
+    ac = new AudioContext();
+
+    master = ac.createGain();
+    master.gain.value = 0.0;
+
+    comp = ac.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.knee.value = 18;
+    comp.ratio.value = 10;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.12;
+
+    filt = ac.createBiquadFilter();
+    filt.type = "bandpass";
+    filt.frequency.value = 1400;
+    filt.Q.value = 0.9;
+
+    drive = ac.createWaveShaper();
+    drive.curve = makeWaveshaper(18);
+    drive.oversample = "4x";
+
+    master.connect(comp);
+    comp.connect(drive);
+    drive.connect(filt);
+    filt.connect(ac.destination);
+
+    noiseBuf = makeNoiseBuffer();
+
+    // Fade in quickly (hostile, but not silent)
+    const t = ac.currentTime;
+    master.gain.cancelScheduledValues(t);
+    master.gain.setValueAtTime(0.0001, t);
+    master.gain.exponentialRampToValueAtTime(0.55, t + 0.25);
+
+    audioOK = true;
+    beepNext = 0;
+    speechNext = 0;
+  }
+
+  function beep(tNow, tension){
+    if (!audioOK) return;
+
+    // UI beep grains: short oscillators + noise clicks
+    const now = ac.currentTime;
+
+    const rate = lerp(0.18, 0.045, tension); // seconds between beeps
+    const jitter = lerp(0.02, 0.008, tension);
+    const dur = lerp(0.028, 0.012, tension);
+
+    const f0 = lerp(240, 2400, tension) * lerp(0.85, 1.15, Math.random());
+    const f1 = f0 * lerp(0.7, 1.3, Math.random());
+
+    // oscillator beep
+    const o = ac.createOscillator();
+    o.type = (Math.random() < 0.5) ? "square" : "sawtooth";
+    o.frequency.setValueAtTime(f0, now);
+
+    const g = ac.createGain();
+    const amp = lerp(0.02, 0.12, tension) * lerp(0.6, 1.4, Math.random());
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(amp, now + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    // pitch tick
+    o.frequency.exponentialRampToValueAtTime(f1, now + dur);
+
+    // click noise
+    const ns = ac.createBufferSource();
+    ns.buffer = noiseBuf;
+    const ng = ac.createGain();
+    ng.gain.value = lerp(0.01, 0.07, tension) * (Math.random()<0.35 ? 1.8 : 1.0);
+
+    // mild filter wobble tied to tension
+    filt.frequency.setValueAtTime(lerp(800, 2200, tension), now);
+    filt.Q.setValueAtTime(lerp(0.7, 2.2, tension), now);
+
+    o.connect(g);
+    g.connect(master);
+
+    ns.connect(ng);
+    ng.connect(master);
+
+    o.start(now);
+    o.stop(now + dur);
+
+    ns.start(now);
+    ns.stop(now + Math.min(0.09, 0.02 + dur*2));
+
+    // schedule next
+    beepNext = tNow + rate + (Math.random()*2-1)*jitter;
+  }
+
+  function speakBurst(tNow, tension){
+    if (!("speechSynthesis" in window)) return;
+
+    // Cancel occasionally to feel "thread-starved"
+    if (Math.random() < 0.22 + 0.20*tension) window.speechSynthesis.cancel();
+
+    const gamer = [
+      "integrity violation",
+      "packet loss",
+      "matchmaking unstable",
+      "kernel flagged",
+      "hit registration failed",
+      "input spoof detected",
+      "desync",
+      "rollback initiated"
+    ];
+    const comm = [
+      "limited drop",
+      "subscribe now",
+      "flash sale",
+      "add to cart",
+      "premium upgrade",
+      "auto renew enabled",
+      "exclusive bundle"
+    ];
+
+    // Oil/water: sometimes it flips from gamer to commercial voice
+    const phrase = (Math.random() < 0.55) ? rpick(gamer) : rpick(comm);
+    const extra = (Math.random() < 0.45) ? ` code ${rpick(CODES).replace("0x","")}` : "";
+    const u = new SpeechSynthesisUtterance(phrase + extra);
+
+    // Voice selection: pick something that exists; fallback is fine
+    const voices = window.speechSynthesis.getVoices?.() || [];
+    if (voices.length){
+      // bias toward English voices
+      const v = voices.find(v => /en/i.test(v.lang)) || voices[0];
+      u.voice = v;
+    }
+
+    u.rate = clamp(lerp(1.05, 2.1, tension) + (Math.random()*0.12-0.06), 0.8, 2.3);
+    u.pitch = clamp(lerp(0.75, 1.45, 1-tension) + (Math.random()*0.2-0.1), 0.5, 2.0);
+    u.volume = clamp(lerp(0.35, 0.95, tension), 0.0, 1.0);
+
+    window.speechSynthesis.speak(u);
+
+    // schedule next: rarer early, frequent later (but not constant)
+    const base = lerp(5.8, 1.6, tension);
+    const jitter = lerp(1.8, 0.35, tension);
+    speechNext = tNow + base + (Math.random()*2-1)*jitter;
+  }
+
+  // =========================
+  // Resize
+  // =========================
+  function resize(){
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const w = window.innerWidth, h = window.innerHeight;
+
+    c.width = Math.floor(w*dpr);
+    c.height = Math.floor(h*dpr);
+    c.style.width = "100%";
+    c.style.height = "100%";
+
+    prev.width = c.width;
+    prev.height = c.height;
+
+    // corruption buffer
+    small.width = Math.max(260, Math.floor(c.width/7));
+    small.height = Math.max(160, Math.floor(c.height/7));
+
+    // ad layers
+    ad.width = c.width;
+    ad.height = c.height;
+    adPrev.width = c.width;
+    adPrev.height = c.height;
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ptx.setTransform(1,0,0,1,0,0);
+    atx.setTransform(1,0,0,1,0,0);
+    apx.setTransform(1,0,0,1,0,0);
+  }
+  window.addEventListener("resize", resize, { passive:true });
+
+  // =========================
+  // Schedulers
+  // =========================
+  function microcutSchedule(now){
+    microNext = now + lerp(MICRO_MIN, MICRO_MAX, R());
+  }
+  function macroSchedule(now){
+    macroNext = now + lerp(MACRO_MIN, MACRO_MAX, R());
+  }
+  function adLayoutSchedule(now){
+    adLayoutNext = now + lerp(3.0, 8.5, R()); // commercial churn faster
+  }
+
+  // =========================
+  // Gamer spawners (each has variants)
+  // =========================
+  function spawnDamage(){
+    const w = c.width, h = c.height;
+    const x = R()*w, y = R()*h;
+    const sign = (R() < 0.68) ? "-" : "+";
+    const amt = rint(3, 260);
+    const crit = (R() < (0.12 + 0.32*heat));
+    const shield = (R() < 0.22);
+    const txt = crit ? `${sign}${amt} CRIT` : (shield ? `${sign}${amt} SHD` : `${sign}${amt}`);
+    const kind = rint(0,2); // variant look
+    damageNums.push({
+      x, y,
+      vx: lerp(-80, 80, R()),
+      vy: lerp(-230, -50, R()),
+      life: lerp(0.28, 1.1, R()),
+      age: 0,
+      size: crit ? lerp(34, 96, R()) : lerp(16, 56, R()),
+      rot: lerp(-0.9, 0.9, R()),
+      alpha: 1,
+      crit, kind
+    });
+  }
+
+  function spawnToast(){
+    const w = c.width, h = c.height;
+    const side = (R() < 0.5) ? 0 : 1;
+    const x = side ? w - 14 : 14;
+    const y = lerp(50, h-120, R());
+    const kind = rpick(["ACHIEVEMENT","WARNING","MISSION","XP","KILL","SYSTEM","LOOT"]);
+    const line = (() => {
+      if (kind === "ACHIEVEMENT") return `UNLOCKED: ${rpick(["NO_SCOPE","TOUCH_GRASS","MEMORY_LEAK","GODMODE","PREDATOR","SPEEDRUNNER","UI_CORRUPTION"])}`;
+      if (kind === "MISSION") return `OBJECTIVE: ${rpick(["CAPTURE NODE","DEFUSE","EXFIL","HOLD ZONE","SURVIVE","UPLOAD","ESCORT"])}`;
+      if (kind === "XP") return `XP +${rint(10, 1800)} · RANK ${rpick(RANKS)}`;
+      if (kind === "LOOT") return `LOOT: ${rpick(["COMMON","RARE","EPIC","LEGENDARY"])} · ${rpick(["SPRAY","SKIN","EMOTE","CHARM"])}`;
+      if (kind === "KILL") return `${rpick(["YOU","ALLY","ENEMY"])} ELIMINATED · ${rpick(WEAPONS)}`;
+      if (kind === "SYSTEM") return `${rpick(STATUS)} · ${rpick(FLAGS)} · ${rpick(CODES)}`;
+      return `WARNING: ${rpick(["DESYNC","INTEGRITY","INPUT SPOOF","LATENCY","KERNEL TRACE","TELEMETRY"])}`;
+    })();
+
+    toasts.push({
+      x, y, side,
+      kind, line,
+      life: lerp(0.9, 3.2, R()),
+      age: 0,
+      w: lerp(220, 620, R()),
+      h: lerp(26, 52, R()),
+      style: rint(0,2)
+    });
+  }
+
+  function spawnPopup(){
+    const w = c.width, h = c.height;
+    const pw = lerp(260, 560, R());
+    const ph = lerp(140, 380, R());
+    const x = clamp(lerp(-120, w - pw + 120, R()), 0, w - pw);
+    const y = clamp(lerp(-80, h - ph + 80, R()), 0, h - ph);
+
+    const title = rpick([
+      "ANTI-CHEAT ALERT","EULA UPDATE","NETWORK DIAGNOSTIC","GRAPHICS DRIVER",
+      "RANKED ELIGIBILITY","MATCHMAKING NOTICE","KERNEL MODULE","INPUT INTEGRITY"
+    ]);
+    const body = rpick([
+      "Integrity check failed.","Session flagged for review.","Input device mismatch detected.",
+      "Frame pacing unstable.","Packet jitter above baseline.","Untrusted module loaded.",
+      "Telemetry mismatch.","Spoof signature detected."
+    ]);
+    const btnA = rpick(["ACCEPT","RETRY","CONTINUE","OK","APPEAL","VERIFY"]);
+    const btnB = rpick(["CANCEL","QUIT","IGNORE","DETAILS","REPORT","CLOSE"]);
+
+    popups.push({
+      x,y,w:pw,h:ph,
+      title, body, btnA, btnB,
+      life: lerp(0.9, 3.6, R()),
+      age: 0,
+      shake: lerp(0, 12, heat) * (R()<0.7 ? 1 : 0),
+      style: rint(0,2)
+    });
+  }
+
+  function spawnTeamChat(){
+    const name = rpick(CHAT_NAMES);
+    const msg = rpick(CHAT_MSGS);
+    teamChat.push({ name, msg, age:0, life: lerp(1.7, 4.4, R()) });
+    if (teamChat.length > 11) teamChat.shift();
+  }
+
+  function spawnPatchLine(){
+    const tag = rpick(["balance","stability","anti-cheat","UI","audio","matchmaking","hitboxes","movement","ranked","telemetry"]);
+    const sign = rpick(["+","-","*","!"]);
+    const item = rpick([
+      "Adjusted recoil curve","Optimized shader compile","Fixed rare crash on alt-tab",
+      "Nerfed movement tech","Improved hitbox alignment","Added telemetry",
+      "Reduced peeker's advantage","Reworked aim assist","Tuned matchmaking",
+      "Enabled kernel-mode module","Increased microstutter tolerance","Added monetization hooks"
+    ]);
+    patchLines.push({ txt: `${sign} ${tag}: ${item}`, age:0, life: lerp(2.0, 6.0, R()) });
+    if (patchLines.length > 20) patchLines.shift();
+  }
+
+  function spawnKillFeedLine(){
+    const a = rpick(["YOU","ALLY","ENEMY"]);
+    const b = rpick(["ENEMY","ALLY","YOU"]);
+    const wpn = rpick(WEAPONS);
+    const head = (R()<0.22) ? " HS" : "";
+    killFeed.push({ txt: `${a} ▸ ${b} (${wpn})${head}`, age:0, life: lerp(1.2, 3.6, R()), who:a });
+    if (killFeed.length > 12) killFeed.shift();
+  }
+
+  function spawnStreamerChat(){
+    const name = rpick(STREAM_NAMES);
+    const msg = rpick(STREAM_MSGS);
+    const badge = (R()<0.22) ? rpick(STREAM_BADGES) : "";
+    streamerChat.push({ name, msg, badge, age:0, life: lerp(2.8, 7.0, R()) });
+    if (streamerChat.length > 38) streamerChat.shift();
+  }
+
+  // =========================
+  // Commercial spawners (oil/water)
+  // =========================
+  function spawnAdCard(){
+    const w = ad.width, h = ad.height;
+    const cw = lerp(220, 360, R());
+    const ch = lerp(160, 260, R());
+    // "store grid" logic: snap to a clean column grid with margins
+    const margin = 26;
+    const cols = Math.max(2, Math.floor((w - margin*2) / (cw + 18)));
+    const col = rint(0, cols-1);
+    const x = margin + col*(cw+18) + lerp(-6,6,R());
+    const y = margin + lerp(0, h - ch - margin*2, R());
+
+    adCards.push({
+      x,y,w:cw,h:ch,
+      brand: rpick(BRANDS),
+      product: rpick(PRODUCT),
+      price: rpick(PRICES),
+      promo: rpick(PROMOS),
+      cta: rpick(CTA),
+      life: lerp(1.6, 4.6, R()),
+      age: 0,
+      style: rint(0,2)
+    });
+    if (adCards.length > 18) adCards.shift();
+  }
+
+  function spawnAdBanner(){
+    const w = ad.width, h = ad.height;
+    const style = rint(0,2);
+    const bh = (style===0) ? 70 : (style===1 ? 48 : 90);
+    const y = (R()<0.5) ? rint(0, Math.floor(h*0.35)) : rint(Math.floor(h*0.55), h-bh);
+    adBanners.push({
+      x: 0,
+      y,
+      w,
+      h: bh,
+      headline: `${rpick(PROMOS)} ${rpick(PRODUCT)}`,
+      sub: `${rpick(CTA)} · ${rpick(DISCLAIMERS)}`,
+      life: lerp(1.2, 3.8, R()),
+      age: 0,
+      style
+    });
+    if (adBanners.length > 10) adBanners.shift();
+  }
+
+  function spawnAdTicker(){
+    adTicker.push({
+      txt: `${rpick(BRANDS)} ${rpick(PRODUCT)} ${rpick(PRICES)} · ${rpick(CTA)} · ${rpick(DISCLAIMERS)}`.toUpperCase(),
+      age: 0,
+      life: lerp(3.0, 7.5, R())
+    });
+    if (adTicker.length > 12) adTicker.shift();
+  }
+
+  function spawnAdReceipt(){
+    const w = ad.width, h = ad.height;
+    const rw = lerp(180, 320, R());
+    const x = lerp(0, w-rw, R());
+    const y = -40;
+    adReceipts.push({
+      x, y,
+      w: rw,
+      speed: lerp(60, 220, R()),
+      life: lerp(3.0, 7.5, R()),
+      age: 0,
+      lines: [
+        `ORDER ${rpick(CODES)}-${rint(1000,9999)}`,
+        `ITEM ${rpick(PRODUCT)}`,
+        `SHIP ${rpick(["STANDARD","EXPRESS","OVERNIGHT"])}`,
+        `TOTAL ${rpick(PRICES)}`,
+        `${rpick(DISCLAIMERS)}`
+      ]
+    });
+    if (adReceipts.length > 20) adReceipts.shift();
+  }
+
+  function spawnAdTimer(){
+    const w = ad.width, h = ad.height;
+    adTimers.push({
+      x: lerp(20, w-240, R()),
+      y: lerp(20, h-60, R()),
+      t: lerp(5, 60, R()),
+      life: lerp(1.5, 4.0, R()),
+      age: 0,
+      label: rpick(["DROP IN","ENDS IN","OFFER EXPIRES","CHECKOUT TIMER"]),
+      style: rint(0,2)
+    });
+    if (adTimers.length > 10) adTimers.shift();
+  }
+
+  // =========================
+  // Drawing: Gamer layer
+  // =========================
+  function drawHUD(w,h, t){
+    // top line
+    ctx.strokeStyle = cssVar("--line");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(14, 18);
+    ctx.lineTo(w-14, 18);
+    ctx.stroke();
+
+    // computed stats (fake)
+    const fps = Math.floor(lerp(18, 240, 1-heat) + 18*Math.sin(t*3.1));
+    const ping = Math.floor(lerp(8, 220, heat) + 28*Math.sin(t*1.4));
+    const tick = Math.floor(lerp(30, 144, 1-heat));
+    const rank = rpick(RANKS);
+    const map = rpick(MAPS);
+
+    ctx.fillStyle = cssVar("--fg");
+    ctx.font = `${Math.max(12, Math.floor(Math.min(w,h)*0.018))}px ${rpick(UI_FONTS)}`;
+    ctx.fillText(`MAP: ${map}`, 16, 42);
+    ctx.fillText(`RANK: ${rank}`, 16, 62);
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.fillText(`FPS ${fps} · PING ${ping}ms · TICK ${tick} · ${rpick(STATUS)} · ${rpick(FLAGS)}`, 16, 82);
+
+    // minimap block (always lies)
+    const mm = Math.floor(Math.min(w,h)*0.18);
+    const mx0 = w - mm - 18;
+    const my0 = 28;
+    ctx.strokeStyle = `rgba(235,240,255,${lerp(0.08,0.30,1-heat).toFixed(3)})`;
+    ctx.strokeRect(mx0+0.5, my0+0.5, mm, mm);
+
+    const g = Math.max(10, Math.floor(mm/6));
+    ctx.beginPath();
+    for (let x=mx0; x<=mx0+mm; x+=g){ ctx.moveTo(x+0.5, my0); ctx.lineTo(x+0.5, my0+mm); }
+    for (let y=my0; y<=my0+mm; y+=g){ ctx.moveTo(mx0, y+0.5); ctx.lineTo(mx0+mm, y+0.5); }
+    ctx.stroke();
+
+    const blips = rint(3, 18);
+    for (let i=0;i<blips;i++){
+      const bx = mx0 + R()*mm;
+      const by = my0 + R()*mm;
+      ctx.fillStyle = (R()<0.55) ? cssVar("--bad") : cssVar("--good");
+      ctx.fillRect(bx, by, 2, 2);
+    }
+
+    // bottom bars
+    const barW = Math.floor(w*0.26);
+    const bx = 16, by = h-44;
+    const hp = clamp(1 - heat*0.72 + 0.12*Math.sin(t*2.7), 0, 1);
+    const ammo = clamp(0.8 - heat*0.55 + 0.15*Math.sin(t*1.9), 0, 1);
+
+    ctx.strokeStyle = cssVar("--line");
+    ctx.strokeRect(bx+0.5, by+0.5, barW, 10);
+    ctx.strokeRect(bx+0.5, by+16.5, barW, 10);
+
+    ctx.fillStyle = cssVar("--good");
+    ctx.fillRect(bx, by, Math.floor(barW*hp), 10);
+    ctx.fillStyle = cssVar("--warn");
+    ctx.fillRect(bx, by+16, Math.floor(barW*ammo), 10);
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.font = `${Math.max(11, Math.floor(Math.min(w,h)*0.016))}px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.fillText(`HP ${Math.floor(hp*100)}%`, bx+barW+10, by+9);
+    ctx.fillText(`AMMO ${Math.floor(ammo*100)}%`, bx+barW+10, by+25);
+
+    // center crosshair exists but WILL be redacted later; draw faint anyway
+    const cx = w*0.5, cy = h*0.5;
+    ctx.strokeStyle = `rgba(235,240,255,${lerp(0.05,0.18, 1-heat).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(cx-12, cy); ctx.lineTo(cx+12, cy);
+    ctx.moveTo(cx, cy-12); ctx.lineTo(cx, cy+12);
+    ctx.stroke();
+  }
+
+  function drawDamage(dt){
+    for (let i=damageNums.length-1;i>=0;i--){
+      const d = damageNums[i];
+      d.age += dt;
+      const k = d.age / d.life;
+      if (k >= 1){ damageNums.splice(i,1); continue; }
+
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.alpha = 1 - smoothstep(0.45, 1.0, k);
+
+      ctx.save();
+      ctx.globalAlpha = d.alpha * lerp(0.55, 1.0, 1-heat);
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rot);
+
+      // variants
+      if (d.kind === 0){
+        ctx.font = `900 ${Math.floor(d.size)}px ${d.crit ? "Impact, Arial Black, sans-serif" : "ui-monospace, Menlo, Consolas, monospace"}`;
+      } else if (d.kind === 1){
+        ctx.font = `900 ${Math.floor(d.size)}px ${d.crit ? "'Arial Black', Gadget, sans-serif" : "system-ui, Segoe UI, Arial"}`;
+      } else {
+        ctx.font = `700 ${Math.floor(d.size)}px ui-monospace, Menlo, Consolas, monospace`;
+      }
+
+      const fill = d.crit ? cssVar("--bad") : cssVar("--warn");
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = "rgba(0,0,0,0.65)";
+      ctx.lineWidth = Math.max(2, Math.floor(d.size*0.08));
+      ctx.strokeText(d.txt, 0, 0);
+      ctx.fillText(d.txt, 0, 0);
+
+      // extra outline fragments (abrasive)
+      if (R() < 0.22 + 0.28*heat){
+        ctx.globalAlpha *= 0.55;
+        ctx.strokeStyle = "rgba(235,240,255,0.25)";
+        ctx.lineWidth = 1;
+        ctx.strokeText(d.txt, lerp(-10,10,R()), lerp(-10,10,R()));
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawToasts(dt){
+    for (let i=toasts.length-1;i>=0;i--){
+      const t = toasts[i];
+      t.age += dt;
+      const k = t.age / t.life;
+      if (k >= 1){ toasts.splice(i,1); continue; }
+
+      const inOut = (k < 0.14) ? smoothstep(0,0.14,k) : (k > 0.86 ? 1 - smoothstep(0.86,1,k) : 1);
+      const wob = (t.side ? -1 : 1) * lerp(0, 18, (1-inOut)) * (0.3 + 0.7*R());
+      const x = t.side ? (t.x - t.w - wob) : (t.x + wob);
+
+      ctx.save();
+      ctx.globalAlpha = lerp(0.2, 1.0, inOut);
+
+      // style variants
+      const bg = (t.style===0) ? "rgba(10,12,18,0.62)" : (t.style===1 ? "rgba(0,0,0,0.52)" : "rgba(20,24,36,0.55)");
+      const borderA = (t.style===2) ? `rgba(255,230,140,${lerp(0.14,0.35,heat)})` : cssVar("--line");
+
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = borderA;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, t.y, t.w, t.h, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      // header strip
+      if (t.style===1){
+        ctx.fillStyle = "rgba(235,240,255,0.07)";
+        ctx.fillRect(x, t.y, t.w, 20);
+      }
+
+      ctx.fillStyle = cssVar("--dim");
+      ctx.font = `700 11px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(t.kind, x+10, t.y+14);
+
+      ctx.fillStyle = cssVar("--fg");
+      ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(t.line, x+10, t.y+32);
+
+      // tiny “icon”
+      if (R() < 0.45){
+        ctx.fillStyle = (t.kind==="WARNING") ? cssVar("--bad") : cssVar("--good");
+        ctx.fillRect(x+t.w-18, t.y+6, 8, 8);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawPopups(dt){
+    for (let i=popups.length-1;i>=0;i--){
+      const p = popups[i];
+      p.age += dt;
+      const k = p.age / p.life;
+      if (k >= 1){ popups.splice(i,1); continue; }
+
+      const inOut = (k < 0.12) ? smoothstep(0,0.12,k) : (k > 0.88 ? 1 - smoothstep(0.88,1,k) : 1);
+      const sh = p.shake ? (Math.sin(p.age*42) * p.shake) : 0;
+      const x = p.x + sh;
+      const y = p.y + Math.cos(p.age*37)* (p.shake? p.shake*0.6 : 0);
+
+      ctx.save();
+      ctx.globalAlpha = lerp(0.25, 1.0, inOut);
+
+      // style variants
+      const border = (p.style===2) ? `rgba(255,120,140,${lerp(0.18,0.55,heat)})` : `rgba(235,240,255,${lerp(0.12,0.30,heat)})`;
+      const bg = (p.style===0) ? "rgba(8,10,14,0.78)" : (p.style===1 ? "rgba(0,0,0,0.72)" : "rgba(12,14,20,0.70)");
+
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = border;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, p.w, p.h, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      // title bar
+      ctx.fillStyle = (p.style===1) ? "rgba(235,240,255,0.06)" : `rgba(235,240,255,${lerp(0.06,0.16,heat)})`;
+      ctx.fillRect(x, y, p.w, 30);
+
+      ctx.fillStyle = cssVar("--fg");
+      ctx.font = `700 12px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(p.title, x+10, y+19);
+
+      ctx.fillStyle = cssVar("--dim");
+      ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText(p.body, x+10, y+56);
+
+      // “evidence” block
+      ctx.fillStyle = `rgba(0,0,0,${p.style===2 ? 0.45 : 0.35})`;
+      ctx.fillRect(x+10, y+74, p.w-20, p.h-126);
+
+      ctx.fillStyle = cssVar("--dim");
+      ctx.font = `11px ui-monospace, Menlo, Consolas, monospace`;
+      const ev = [
+        `module: ${rpick(FLAGS)}`,
+        `hash: ${rpick(CODES)}-${rint(1000,9999)}`,
+        `tick: ${rint(10,144)}  jitter: ${rint(0,62)}ms`,
+        `device: HID_${rint(10,99)}  input: ${rpick(["RAW","EMUL","SPOOF","SCRIPT"])}`,
+      ];
+      for (let j=0;j<ev.length;j++){
+        ctx.fillText(ev[j], x+18, y+98 + j*16);
+      }
+
+      // buttons
+      const by = y + p.h - 44;
+      ctx.strokeStyle = cssVar("--line");
+      ctx.strokeRect(x+10+0.5, by+0.5, 110, 28);
+      ctx.strokeRect(x+130+0.5, by+0.5, 110, 28);
+
+      ctx.fillStyle = cssVar("--fg");
+      ctx.fillText(p.btnA, x+22, by+19);
+      ctx.fillStyle = cssVar("--dim");
+      ctx.fillText(p.btnB, x+142, by+19);
+
+      // extra: checkbox spam sometimes (variety)
+      if (R() < 0.35 + 0.20*heat){
+        const cx = x + p.w - 168, cy = y + p.h - 84;
+        ctx.fillStyle = "rgba(235,240,255,0.09)";
+        ctx.fillRect(cx, cy, 12, 12);
+        ctx.strokeStyle = "rgba(235,240,255,0.25)";
+        ctx.strokeRect(cx+0.5, cy+0.5, 12, 12);
+        ctx.fillStyle = cssVar("--dim");
+        ctx.fillText("I AGREE", cx+18, cy+11);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawTeamChat(dt, w, h){
+    const x = 16, y = h - 220;
+
+    ctx.save();
+    ctx.globalAlpha = lerp(0.30, 0.82, smoothstep(0.15,0.85,heat));
+    ctx.fillStyle = "rgba(10,12,18,0.55)";
+    ctx.strokeStyle = cssVar("--line");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, 380, 198, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.font = `700 11px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.fillText("TEAM CHAT", x+12, y+18);
+
+    ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+    for (let i=0;i<teamChat.length;i++){
+      const lineY = y+44 + i*14;
+      ctx.fillStyle = "rgba(140,190,255,0.82)";
+      ctx.fillText(teamChat[i].name + ":", x+12, lineY);
+      ctx.fillStyle = cssVar("--fg");
+      ctx.fillText(teamChat[i].msg, x+12 + 130, lineY);
+      teamChat[i].age += dt;
+    }
+    ctx.restore();
+  }
+
+  function drawPatch(dt, w){
+    const x = w - 432, y = 108;
+
+    ctx.save();
+    ctx.globalAlpha = lerp(0.12, 0.88, smoothstep(0.28,0.95,heat));
+    ctx.fillStyle = "rgba(10,12,18,0.45)";
+    ctx.strokeStyle = cssVar("--line");
+    ctx.beginPath();
+    ctx.roundRect(x, y, 416, 292, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = cssVar("--dim");
+    ctx.font = `700 11px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.fillText(`PATCH ${rint(1,9)}.${rint(0,9)}.${rint(0,9)} · ${rpick(["HOTFIX","LIVE","ROLLBACK","EXPERIMENTAL","A/B"])}`, x+12, y+18);
+
+    ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+    for (let i=0;i<patchLines.length;i++){
+      const p = patchLines[i];
+      p.age += dt;
+      ctx.fillStyle = (p.txt.startsWith("-")) ? cssVar("--bad") : (p.txt.startsWith("+") ? cssVar("--good") : cssVar("--fg"));
+      ctx.fillText(p.txt, x+12, y+42 + i*14);
+    }
+    ctx.restore();
+  }
+
+  function drawKillFeed(dt, w){
+    ctx.save();
+    ctx.globalAlpha = lerp(0.18, 0.78, smoothstep(0.18, 0.95, heat));
+    ctx.font = `12px ui-monospace, Menlo, Consolas, monospace`;
+
+    const baseX = w - 292;
+    for (let i=0;i<killFeed.length;i++){
+      const k = killFeed[i];
+      k.age += dt;
+      const a = clamp(1 - (k.age / k.life), 0, 1);
+      const y = 58 + i*16;
+
+      ctx.globalAlpha = a * lerp(0.22, 0.78, smoothstep(0.2,0.95,heat));
+      ctx.fillStyle = (k.who==="YOU") ? cssVar("--good") : (k.who==="ENEMY" ? cssVar("--bad") : cssVar("--fg"));
+      ctx.fillText(k.txt, baseX, y);
+    }
+    // prune dead
+    for (let i=killFeed.length-1;i>=0;i--){
+      if (killFeed[i].age >= killFeed[i].life) killFeed.splice(i,1);
+    }
+    ctx.restore();
+  }
+
+  function drawStreamerOverlay(dt, w, h){
+    // "streamer chat feed" — vertical scrolling, different rhythm than team chat
+    const paneW = 340;
+    const x = w - paneW - 16;
+    const y = Math.floor(h*0.45);
+    const paneH = Math.floor(h*0.50);
+
+    ctx.save();
+    ctx.globalAlpha = lerp(0.10, 0.78, smoothstep(0.18, 0.95, heat));
+    ctx.fillStyle = "rgba(255,255,255,0.05)"; // oil/water hint (lighter)
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, paneW, paneH, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(255,255,255,0.62)";
+    ctx.font = `700 11px ${rpick(UI_FONTS)}`;
+    ctx.fillText("STREAM CHAT", x+12, y+18);
+
+    // scroll upward: compute offsets by age, not by discrete lines only
+    const lineY0 = y + paneH - 16;
+    ctx.font = `12px ${rpick(UI_FONTS)}`;
+
+    for (let i=0;i<streamerChat.length;i++){
+      const m = streamerChat[i];
+      m.age += dt;
+      const k = m.age / m.life;
+      if (k >= 1) continue;
+
+      // each line rises faster with heat
+      const rise = (m.age * lerp(22, 78, heat));
+      const ly = lineY0 - rise - i*14;
+      if (ly < y+28 || ly > y + paneH - 10) continue;
+
+      const a = clamp(1 - smoothstep(0.75, 1.0, k), 0, 1);
+      ctx.globalAlpha = a * lerp(0.12, 0.80, smoothstep(0.2,0.95,heat));
+
+      // badge
+      let dx = x + 12;
+      if (m.badge){
+        ctx.fillStyle = "rgba(255,230,140,0.78)";
+        ctx.fillText(`[${m.badge}]`, dx, ly);
+        dx += 62;
+      }
+
+      ctx.fillStyle = "rgba(140,190,255,0.82)";
+      ctx.fillText(m.name + ":", dx, ly);
+      ctx.fillStyle = "rgba(255,255,255,0.86)";
+      ctx.fillText(m.msg, dx + 118, ly);
+    }
+
+    // prune
+    for (let i=streamerChat.length-1;i>=0;i--){
+      if (streamerChat[i].age >= streamerChat[i].life) streamerChat.splice(i,1);
+    }
+
+    ctx.restore();
+  }
+
+  // =========================
+  // Sludge engine: feedback + corruption (whole frame)
+  // =========================
+  function feedbackPass(w,h){
+    ctx.save();
+
+    // base
+    ctx.fillStyle = cssVar("--bg");
+    ctx.fillRect(0,0,w,h);
+
+    // feedback intensity grows with heat + spike
+    const fb = lerp(0.82, 0.985, smoothstep(0.08,0.98,heat)) * lerp(1.0, 1.05, spike);
+    ctx.globalAlpha = clamp(fb, 0, 1);
+
+    // jitter
+    const ang = lerp(-0.03, 0.05, R()) * lerp(0.2, 1.0, heat);
+    const sc  = 1 + lerp(-0.016, 0.05, R()) * lerp(0.3, 1.0, heat);
+    const tx  = lerp(-28, 28, R()) * lerp(0.2, 1.0, heat);
+    const ty  = lerp(-22, 22, R()) * lerp(0.2, 1.0, heat);
+
+    ctx.translate(w*0.5 + tx, h*0.5 + ty);
+    ctx.rotate(ang);
+    ctx.scale(sc, sc);
+    ctx.translate(-w*0.5, -h*0.5);
+
+    const comps = ["source-over","screen","overlay","difference","lighter","multiply","exclusion"];
+    ctx.globalCompositeOperation = rpick(comps);
+
+    ctx.drawImage(prev, 0, 0);
+
+    ctx.restore();
+
+    // tear bands
+    const tearN = Math.floor(lerp(0, 9, smoothstep(0.30,0.995,heat)));
+    for (let i=0;i<tearN;i++){
+      if (R() > 0.30 + 0.55*heat) continue;
+      const y = Math.floor(R()*h);
+      const th = Math.floor(lerp(6, 56, R()) * lerp(0.6, 1.7, heat));
+      const dx = Math.floor(lerp(-120, 120, R()) * lerp(0.4, 1.4, heat));
+      ctx.globalAlpha = lerp(0.30, 0.88, R());
+      ctx.drawImage(prev, 0, y, w, th, dx, y, w, th);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function corruptionOps(w,h){
+    // Downsample current frame and occasionally apply pixel ops
+    stx.clearRect(0,0,small.width, small.height);
+    stx.drawImage(c, 0,0, w,h, 0,0, small.width, small.height);
+
+    const doPixels = (R() < lerp(0.07, 0.33, heat)) || (spike > 0.4 && R() < 0.55);
+    if (!doPixels) return;
+
+    const img = stx.getImageData(0,0,small.width, small.height);
+    const d = img.data;
+
+    const opPool =
+      (mode === "BOOT") ? ["posterize","scanline"] :
+      (mode === "ANTICHEAT") ? ["threshold","invert","difference"] :
+      (mode === "PATCHNOTES") ? ["posterize","chswap","scanline","threshold"] :
+      (mode === "GLITCHLOOP") ? ["threshold","posterize","invert","chswap","difference"] :
+      ["posterize","threshold","chswap","scanline","difference","invert"];
+
+    const op = rpick(opPool);
+    const posterLevels = rint(3, 6);
+    const thr = lerp(60, 190, R()) * lerp(0.75, 1.25, heat);
+
+    for (let i=0;i<d.length;i+=4){
+      let r=d[i], g=d[i+1], b=d[i+2];
+
+      if (op === "invert"){
+        r = 255-r; g=255-g; b=255-b;
+      } else if (op === "chswap"){
+        if (R()<0.55){ const tmp=r; r=g; g=tmp; }
+        if (R()<0.35){ const tmp=b; b=g; g=tmp; }
+      } else if (op === "threshold"){
+        const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        const v = (lum > thr) ? 255 : 0;
+        r=g=b=v;
+      } else if (op === "posterize"){
+        const step = 255/(posterLevels-1);
+        r = Math.round(r/step)*step;
+        g = Math.round(g/step)*step;
+        b = Math.round(b/step)*step;
+      } else if (op === "difference"){
+        r = Math.abs(r - (g*0.85))|0;
+        g = Math.abs(g - (b*0.85))|0;
+        b = Math.abs(b - (r*0.85))|0;
+      }
+      d[i]=r; d[i+1]=g; d[i+2]=b;
+    }
+
+    if (op === "scanline"){
+      const sw = small.width;
+      const step = rint(3,6);
+      for (let y=0;y<small.height;y++){
+        if ((y % step) === 0){
+          for (let x=0;x<sw;x++){
+            const idx = (y*sw + x)*4;
+            d[idx]   = (d[idx]*0.70)|0;
+            d[idx+1] = (d[idx+1]*0.70)|0;
+            d[idx+2] = (d[idx+2]*0.70)|0;
+          }
+        }
+      }
+    }
+
+    stx.putImageData(img, 0,0);
+
+    // Blend corrupted buffer back (pixel stretch)
+    ctx.save();
+    ctx.globalAlpha = lerp(0.20, 0.70, heat) * lerp(1.0, 1.35, spike);
+    ctx.globalCompositeOperation = rpick(["overlay","screen","difference","lighter","source-over","exclusion"]);
+    ctx.imageSmoothingEnabled = false;
+    const sx = Math.floor(lerp(-80, 80, R()) * heat);
+    const sy = Math.floor(lerp(-60, 60, R()) * heat);
+    ctx.drawImage(small, 0,0, small.width, small.height, sx, sy, w, h);
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // =========================
+  // Cursor tracers + cursor skins
+  // =========================
+  function spawnTracer(px,py){
+    const kind = rint(0,3);
+    tracers.push({
+      x:px, y:py,
+      vx: lerp(-140,140,R()),
+      vy: lerp(-140,140,R()),
+      life: lerp(0.18, 0.8, R()),
+      age: 0,
+      kind,
+      sz: lerp(4, 22, R()) * lerp(0.7, 1.6, heat),
+      rot: lerp(-3.14, 3.14, R()),
+      alpha: 1
+    });
+    if (tracers.length > 420) tracers.splice(0, 60);
+  }
+
+  function drawTracers(dt){
+    for (let i=tracers.length-1;i>=0;i--){
+      const p = tracers[i];
+      p.age += dt;
+      const k = p.age / p.life;
+      if (k >= 1){ tracers.splice(i,1); continue; }
+
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.alpha = 1 - smoothstep(0.3, 1.0, k);
+
+      ctx.save();
+      ctx.globalAlpha = p.alpha * lerp(0.25, 0.95, smoothstep(0.15,0.95,heat));
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+
+      // abrasive palette switching
+      const col = (p.kind===0) ? cssVar("--warn") : (p.kind===1 ? cssVar("--bad") : (p.kind===2 ? cssVar("--good") : "rgba(235,240,255,0.85)"));
+      ctx.fillStyle = col;
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.lineWidth = 1;
+
+      if (p.kind === 0){
+        // block
+        ctx.fillRect(-p.sz*0.5, -p.sz*0.5, p.sz, p.sz);
+      } else if (p.kind === 1){
+        // line slash
+        ctx.beginPath();
+        ctx.moveTo(-p.sz, 0);
+        ctx.lineTo(p.sz, 0);
+        ctx.stroke();
+      } else if (p.kind === 2){
+        // ring
+        ctx.beginPath();
+        ctx.arc(0,0, p.sz*0.55, 0, Math.PI*2);
+        ctx.stroke();
+      } else {
+        // triangle
+        ctx.beginPath();
+        ctx.moveTo(0, -p.sz);
+        ctx.lineTo(p.sz, p.sz);
+        ctx.lineTo(-p.sz, p.sz);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawCursor(){
+    ctx.save();
+    ctx.translate(mx, my);
+
+    const a = lerp(0.55, 0.95, smoothstep(0.12, 0.98, heat));
+    ctx.globalAlpha = a;
+
+    // cursor styles shift occasionally
+    const s = cursorStyle;
+
+    if (s === 0){
+      // crosshair
+      ctx.strokeStyle = "rgba(235,240,255,0.82)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(-10,0); ctx.lineTo(10,0);
+      ctx.moveTo(0,-10); ctx.lineTo(0,10);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(235,240,255,0.35)";
+      ctx.fillRect(-1, -1, 2, 2);
+    } else if (s === 1){
+      // caret + box
+      ctx.strokeStyle = cssVar("--warn");
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-7.5,-7.5, 15, 15);
+      ctx.beginPath();
+      ctx.moveTo(-12,-12); ctx.lineTo(0,0);
+      ctx.lineTo(8,-10);
+      ctx.stroke();
+    } else if (s === 2){
+      // “hand” abstract
+      ctx.strokeStyle = cssVar("--good");
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0,0, 6, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(8,0); ctx.lineTo(16,0);
+      ctx.moveTo(0,8); ctx.lineTo(0,16);
+      ctx.stroke();
+    } else {
+      // warning pointer
+      ctx.strokeStyle = cssVar("--bad");
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0,-12);
+      ctx.lineTo(10,12);
+      ctx.lineTo(-10,12);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,120,140,0.22)";
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // =========================
+  // Center redaction (kills crosshair)
+  // =========================
+  function redactCenter(w,h){
+    const cx = w*0.5, cy = h*0.5;
+    const s = Math.floor(Math.min(w,h) * lerp(0.045, 0.075, smoothstep(0.2,0.95,heat)));
+
+    ctx.save();
+    // matte redaction
+    ctx.fillStyle = "rgba(0,0,0,0.92)";
+    ctx.fillRect(cx - s, cy - s, s*2, s*2);
+
+    // “REDACTED” tape sometimes
+    if (R() < 0.55){
+      ctx.globalAlpha = lerp(0.25, 0.85, smoothstep(0.2,0.95,heat));
+      ctx.fillStyle = "rgba(255,230,140,0.82)";
+      ctx.translate(cx, cy);
+      ctx.rotate(lerp(-0.45, 0.45, R()));
+      ctx.fillRect(-s*1.1, -10, s*2.2, 20);
+      ctx.fillStyle = "rgba(0,0,0,0.78)";
+      ctx.font = `700 ${Math.max(10, Math.floor(s*0.30))}px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText("REDACTED", -s*0.92, 6);
+    }
+    ctx.restore();
+  }
+
+  // =========================
+  // Commercial layer rendering (oil/water)
+  // Completely different logic: clean store layout + white space + cards
+  // Then it contaminates gamer layer via compositing/masks.
+  // =========================
+  function adResetFrame(){
+    atx.clearRect(0,0,ad.width, ad.height);
+
+    // clean-ish base: bright paper that clashes with gamer darkness
+    // But keep alpha so it behaves like oil on top, not replacing fully.
+    atx.save();
+    atx.globalAlpha = lerp(0.06, 0.18, smoothstep(0.15,0.95,heat));
+    atx.fillStyle = "rgba(255,255,255,1)";
+    atx.fillRect(0,0,ad.width, ad.height);
+    atx.restore();
+  }
+
+  function drawAdLayout(t, dt){
+    const w = ad.width, h = ad.height;
+    adResetFrame();
+
+    // separate feedback for ads (oil slick)
+    atx.save();
+    const fb = lerp(0.78, 0.96, smoothstep(0.1,0.98,heat));
+    atx.globalAlpha = fb;
+    atx.globalCompositeOperation = rpick(["source-over","multiply","screen","overlay","difference"]);
+    const sc = 1 + lerp(-0.01, 0.02, R()) * lerp(0.3, 1.0, heat);
+    const tx = lerp(-16, 16, R()) * lerp(0.2, 1.0, heat);
+    const ty = lerp(-12, 12, R()) * lerp(0.2, 1.0, heat);
+    atx.translate(w*0.5 + tx, h*0.5 + ty);
+    atx.scale(sc, sc);
+    atx.translate(-w*0.5, -h*0.5);
+    atx.drawImage(adPrev, 0,0);
+    atx.restore();
+    atx.globalCompositeOperation = "source-over";
+
+    // oil/water layout shifts
+    if (t >= adLayoutNext){
+      adLayout = rpick(AD_LAYOUTS);
+      adLayoutSchedule(t);
+    }
+
+    // spawn commercial elements (different cadence than gamer)
+    const churn = lerp(0.25, 0.92, smoothstep(0.18,0.98,heat));
+    if (R() < churn) spawnAdCard();
+    if (R() < churn*0.6) spawnAdBanner();
+    if (R() < churn*0.55) spawnAdTicker();
+    if (R() < churn*0.35) spawnAdReceipt();
+    if (R() < churn*0.30) spawnAdTimer();
+
+    // draw ticker (clean, persistent)
+    drawAdTicker(t, w, h);
+
+    // layout-specific “composition logic”
+    if (adLayout === "STORE_GRID"){
+      drawAdStoreGrid(dt);
+    } else if (adLayout === "CHECKOUT_FLOW"){
+      drawAdCheckout(dt);
+    } else if (adLayout === "INFLUENCER_OVERLAY"){
+      drawAdInfluencer(dt);
+    } else if (adLayout === "COUPON_WALL"){
+      drawAdCoupons(dt);
+    } else if (adLayout === "RECEIPT_RAIN"){
+      drawAdReceipts(dt);
+    }
+
+    // always draw banners + timers on top
+    drawAdBanners(dt);
+    drawAdTimers(dt);
+
+    // persist commercial frame
+    apx.clearRect(0,0,w,h);
+    apx.drawImage(ad, 0,0);
+  }
+
+  function drawAdTicker(t, w, h){
+    // promo tape at top OR mid, super clean, ultra different from gamer
+    const tapeH = 36;
+    atx.save();
+    atx.globalAlpha = lerp(0.18, 0.65, smoothstep(0.2,0.95,heat));
+    atx.fillStyle = "rgba(255,255,255,0.92)";
+    const y = (R() < 0.5) ? 0 : Math.floor(h*0.18);
+    atx.fillRect(0, y, w, tapeH);
+
+    atx.strokeStyle = "rgba(0,0,0,0.12)";
+    atx.beginPath();
+    atx.moveTo(0, y+tapeH-0.5);
+    atx.lineTo(w, y+tapeH-0.5);
+    atx.stroke();
+
+    // scrolling text
+    const msg = (adTicker.length ? adTicker[adTicker.length-1].txt : `${rpick(BRANDS)} ${rpick(PRODUCT)} ${rpick(PRICES)} · ${rpick(CTA)}`.toUpperCase());
+    const speed = lerp(80, 420, smoothstep(0.15,0.98,heat));
+    const off = (t*speed) % (w + 600);
+
+    atx.fillStyle = "rgba(0,0,0,0.82)";
+    atx.font = `700 14px ${rpick(COMM_FONTS)}`;
+    atx.fillText(msg + "  •  " + msg, w - off, y + 24);
+
+    atx.restore();
+  }
+
+  function drawAdStoreGrid(dt){
+    // clean product tiles, with whitespace + flat borders
+    const w = ad.width, h = ad.height;
+    atx.save();
+    atx.globalAlpha = lerp(0.18, 0.70, smoothstep(0.18,0.95,heat));
+    for (let i=adCards.length-1;i>=0;i--){
+      const p = adCards[i];
+      p.age += dt;
+      const k = p.age/p.life;
+      if (k>=1){ adCards.splice(i,1); continue; }
+
+      const a = clamp(1 - smoothstep(0.75, 1.0, k), 0, 1);
+      atx.globalAlpha = a * lerp(0.10, 0.75, smoothstep(0.18,0.95,heat));
+
+      // card base (white)
+      atx.fillStyle = "rgba(255,255,255,0.92)";
+      atx.strokeStyle = "rgba(0,0,0,0.12)";
+      atx.lineWidth = 1;
+      atx.beginPath();
+      atx.roundRect(p.x, p.y, p.w, p.h, 12);
+      atx.fill();
+      atx.stroke();
+
+      // thumbnail block (flat pastel)
+      const pastel = (p.style===0) ? "rgba(120,170,255,0.25)" : (p.style===1 ? "rgba(255,180,140,0.25)" : "rgba(160,255,190,0.22)");
+      atx.fillStyle = pastel;
+      atx.fillRect(p.x+12, p.y+12, p.w-24, Math.floor(p.h*0.48));
+
+      // text
+      atx.fillStyle = "rgba(0,0,0,0.78)";
+      atx.font = `800 12px ${rpick(COMM_FONTS)}`;
+      atx.fillText(`${p.brand} ${p.promo}`, p.x+12, p.y + Math.floor(p.h*0.52) + 18);
+
+      atx.font = `600 12px ${rpick(COMM_FONTS)}`;
+      atx.fillText(p.product, p.x+12, p.y + Math.floor(p.h*0.52) + 36);
+
+      atx.font = `900 14px ${rpick(COMM_FONTS)}`;
+      atx.fillText(p.price, p.x+12, p.y + p.h - 18);
+
+      // CTA pill
+      atx.fillStyle = "rgba(0,0,0,0.82)";
+      atx.beginPath();
+      atx.roundRect(p.x + p.w - 120, p.y + p.h - 34, 108, 22, 999);
+      atx.fill();
+      atx.fillStyle = "rgba(255,255,255,0.95)";
+      atx.font = `800 11px ${rpick(COMM_FONTS)}`;
+      atx.fillText(p.cta, p.x + p.w - 112, p.y + p.h - 18);
+    }
+    atx.restore();
+  }
+
+  function drawAdCheckout(dt){
+    // checkout columns + totals; clean geometry that ignores gamer logic
+    const w = ad.width, h = ad.height;
+    atx.save();
+    atx.globalAlpha = lerp(0.18, 0.72, smoothstep(0.2,0.95,heat));
+
+    // left column (cart items)
+    const x0 = 22, y0 = Math.floor(h*0.24);
+    const colW = Math.floor(w*0.42);
+    atx.fillStyle = "rgba(255,255,255,0.90)";
+    atx.strokeStyle = "rgba(0,0,0,0.12)";
+    atx.beginPath();
+    atx.roundRect(x0, y0, colW, Math.floor(h*0.56), 14);
+    atx.fill(); atx.stroke();
+
+    atx.fillStyle = "rgba(0,0,0,0.78)";
+    atx.font = `900 14px ${rpick(COMM_FONTS)}`;
+    atx.fillText("CHECKOUT", x0+16, y0+26);
+
+    // item rows
+    atx.font = `600 12px ${rpick(COMM_FONTS)}`;
+    const rows = rint(3, 7);
+    let total = 0;
+    for (let i=0;i<rows;i++){
+      const py = y0+56+i*28;
+      const price = parseFloat(rpick(PRICES).replace("$","")) || 9.99;
+      total += price;
+      atx.fillText(`${rpick(PRODUCT)}`, x0+16, py);
+      atx.fillText(`$${price.toFixed(2)}`, x0+colW-80, py);
+      atx.strokeStyle = "rgba(0,0,0,0.08)";
+      atx.beginPath();
+      atx.moveTo(x0+16, py+10);
+      atx.lineTo(x0+colW-16, py+10);
+      atx.stroke();
+    }
+
+    // right column (summary)
+    const x1 = x0 + colW + 18;
+    const sW = Math.floor(w*0.28);
+    atx.fillStyle = "rgba(255,255,255,0.92)";
+    atx.strokeStyle = "rgba(0,0,0,0.12)";
+    atx.beginPath();
+    atx.roundRect(x1, y0, sW, Math.floor(h*0.34), 14);
+    atx.fill(); atx.stroke();
+
+    atx.fillStyle = "rgba(0,0,0,0.78)";
+    atx.font = `900 13px ${rpick(COMM_FONTS)}`;
+    atx.fillText("SUMMARY", x1+16, y0+26);
+
+    const fee = lerp(3.99, 19.99, R());
+    const tax = total*lerp(0.06, 0.19, R());
+    const grand = total + fee + tax;
+
+    atx.font = `600 12px ${rpick(COMM_FONTS)}`;
+    atx.fillText(`Subtotal`, x1+16, y0+56);
+    atx.fillText(`$${total.toFixed(2)}`, x1+sW-92, y0+56);
+    atx.fillText(`Fees`, x1+16, y0+78);
+    atx.fillText(`$${fee.toFixed(2)}`, x1+sW-92, y0+78);
+    atx.fillText(`Tax`, x1+16, y0+100);
+    atx.fillText(`$${tax.toFixed(2)}`, x1+sW-92, y0+100);
+
+    atx.font = `900 14px ${rpick(COMM_FONTS)}`;
+    atx.fillText(`TOTAL`, x1+16, y0+132);
+    atx.fillText(`$${grand.toFixed(2)}`, x1+sW-92, y0+132);
+
+    // pay button
+    atx.fillStyle = "rgba(0,0,0,0.86)";
+    atx.beginPath();
+    atx.roundRect(x1+16, y0+160, sW-32, 34, 999);
+    atx.fill();
+    atx.fillStyle = "rgba(255,255,255,0.96)";
+    atx.font = `900 12px ${rpick(COMM_FONTS)}`;
+    atx.fillText(rpick(["PAY NOW","CONFIRM","SUBSCRIBE","UPGRADE"]), x1+32, y0+182);
+
+    atx.restore();
+  }
+
+  function drawAdInfluencer(dt){
+    // streamer/influencer overlay: bright captions + subscribe bars + product tags
+    const w = ad.width, h = ad.height;
+    atx.save();
+    atx.globalAlpha = lerp(0.16, 0.72, smoothstep(0.2,0.95,heat));
+
+    // big caption band
+    atx.fillStyle = "rgba(255,255,255,0.92)";
+    atx.fillRect(0, Math.floor(h*0.62), w, 78);
+    atx.fillStyle = "rgba(0,0,0,0.82)";
+    atx.font = `900 20px ${rpick(COMM_FONTS)}`;
+    atx.fillText(`${rpick(["OMG","NEW","HOT","INSANE"])} ${rpick(PRODUCT)} ${rpick(["DROP","RESTOCK","BUNDLE"])}`, 22, Math.floor(h*0.62)+50);
+
+    // subscribe bar (top)
+    atx.fillStyle = "rgba(0,0,0,0.80)";
+    atx.fillRect(0, 0, w, 44);
+    atx.fillStyle = "rgba(255,255,255,0.95)";
+    atx.font = `800 14px ${rpick(COMM_FONTS)}`;
+    atx.fillText(`SUBSCRIBE · ${rpick(BRANDS)} · ${rpick(CTA)} · ${rpick(DISCLAIMERS)}`.toUpperCase(), 22, 28);
+
+    // product tags (floating)
+    const tags = rint(3, 10);
+    for (let i=0;i<tags;i++){
+      const tx = lerp(20, w-220, R());
+      const ty = lerp(60, h-120, R());
+      atx.fillStyle = "rgba(255,255,255,0.88)";
+      atx.strokeStyle = "rgba(0,0,0,0.10)";
+      atx.beginPath();
+      atx.roundRect(tx, ty, 200, 34, 999);
+      atx.fill(); atx.stroke();
+      atx.fillStyle = "rgba(0,0,0,0.82)";
+      atx.font = `800 12px ${rpick(COMM_FONTS)}`;
+      atx.fillText(`${rpick(PRODUCT)}  ${rpick(PRICES)}`, tx+14, ty+22);
+    }
+
+    atx.restore();
+  }
+
+  function drawAdCoupons(dt){
+    // coupon wall: clean grid + loud promo stamps
+    const w = ad.width, h = ad.height;
+    atx.save();
+    atx.globalAlpha = lerp(0.14, 0.72, smoothstep(0.2,0.95,heat));
+    const cellW = 260, cellH = 90;
+    const mx = 22, my = Math.floor(h*0.22);
+    const cols = Math.max(2, Math.floor((w-mx*2)/(cellW+14)));
+    const rows = Math.max(2, Math.floor((h-my-22)/(cellH+14)));
+    for (let r=0;r<rows;r++){
+      for (let c0=0;c0<cols;c0++){
+        if (R() < 0.22) continue;
+        const x = mx + c0*(cellW+14);
+        const y = my + r*(cellH+14);
+        atx.fillStyle = "rgba(255,255,255,0.92)";
+        atx.strokeStyle = "rgba(0,0,0,0.12)";
+        atx.beginPath();
+        atx.roundRect(x,y,cellW,cellH,12);
+        atx.fill(); atx.stroke();
+
+        atx.fillStyle = "rgba(0,0,0,0.82)";
+        atx.font = `900 13px ${rpick(COMM_FONTS)}`;
+        atx.fillText(`${rpick(PROMOS)} COUPON`, x+14, y+26);
+
+        atx.font = `700 12px ${rpick(COMM_FONTS)}`;
+        atx.fillText(`${rpick(BRANDS)} · ${rpick(PRODUCT)}`, x+14, y+48);
+
+        atx.fillStyle = "rgba(0,0,0,0.72)";
+        atx.fillText(`${rpick(["SAVE","GET","TAKE"])} ${rint(10,80)}% · ${rpick(DISCLAIMERS)}`, x+14, y+70);
+
+        // stamp
+        if (R() < 0.45){
+          atx.save();
+          atx.translate(x+cellW-82, y+cellH-26);
+          atx.rotate(lerp(-0.35, 0.35, R()));
+          atx.fillStyle = "rgba(255,120,140,0.88)";
+          atx.font = `900 14px ${rpick(COMM_FONTS)}`;
+          atx.fillText("CLAIM", -30, 0);
+          atx.restore();
+        }
+      }
+    }
+    atx.restore();
+  }
+
+  function drawAdReceipts(dt){
+    // receipts fall like rain (clean typographic strips)
+    const w = ad.width, h = ad.height;
+    atx.save();
+    atx.globalAlpha = lerp(0.12, 0.70, smoothstep(0.2,0.95,heat));
+    for (let i=adReceipts.length-1;i>=0;i--){
+      const r = adReceipts[i];
+      r.age += dt;
+      if (r.age >= r.life){ adReceipts.splice(i,1); continue; }
+      r.y += r.speed * dt * lerp(1.0, 1.6, smoothstep(0.2,0.95,heat));
+      if (r.y > h + 40){ r.y = -40; r.x = lerp(0, w-r.w, R()); }
+
+      atx.fillStyle = "rgba(255,255,255,0.92)";
+      atx.strokeStyle = "rgba(0,0,0,0.12)";
+      atx.beginPath();
+      atx.roundRect(r.x, r.y, r.w, 110, 12);
+      atx.fill(); atx.stroke();
+
+      atx.fillStyle = "rgba(0,0,0,0.82)";
+      atx.font = `700 11px ${rpick(COMM_FONTS)}`;
+      for (let j=0;j<r.lines.length;j++){
+        atx.fillText(r.lines[j], r.x+12, r.y+24 + j*16);
+      }
+
+      // fake QR
+      if (R() < 0.35){
+        atx.fillStyle = "rgba(0,0,0,0.18)";
+        atx.fillRect(r.x+r.w-44, r.y+12, 32, 32);
+        atx.fillStyle = "rgba(0,0,0,0.38)";
+        for (let q=0;q<18;q++){
+          const qx = r.x+r.w-44 + (q%6)*5;
+          const qy = r.y+12 + Math.floor(q/6)*5;
+          if (R()<0.55) atx.fillRect(qx, qy, 4, 4);
+        }
+      }
+    }
+    atx.restore();
+  }
+
+  function drawAdBanners(dt){
+    const w = ad.width;
+    for (let i=adBanners.length-1;i>=0;i--){
+      const b = adBanners[i];
+      b.age += dt;
+      const k = b.age/b.life;
+      if (k>=1){ adBanners.splice(i,1); continue; }
+      const a = clamp(1 - smoothstep(0.70, 1.0, k), 0, 1);
+      atx.save();
+      atx.globalAlpha = a * lerp(0.12, 0.75, smoothstep(0.2,0.95,heat));
+
+      // style variants
+      const base = (b.style===0) ? "rgba(255,255,255,0.92)" : (b.style===1 ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.80)");
+      const text = (b.style===1) ? "rgba(255,255,255,0.95)" : "rgba(0,0,0,0.82)";
+
+      atx.fillStyle = base;
+      atx.fillRect(b.x, b.y, b.w, b.h);
+
+      // divider line
+      atx.strokeStyle = "rgba(0,0,0,0.10)";
+      atx.beginPath();
+      atx.moveTo(0, b.y + b.h - 0.5);
+      atx.lineTo(w, b.y + b.h - 0.5);
+      atx.stroke();
+
+      atx.fillStyle = text;
+      atx.font = `900 15px ${rpick(COMM_FONTS)}`;
+      atx.fillText(b.headline, 22, b.y + 26);
+      atx.font = `700 12px ${rpick(COMM_FONTS)}`;
+      atx.fillText(b.sub, 22, b.y + 46);
+
+      atx.restore();
+    }
+  }
+
+  function drawAdTimers(dt){
+    for (let i=adTimers.length-1;i>=0;i--){
+      const tm = adTimers[i];
+      tm.age += dt;
+      const k = tm.age/tm.life;
+      if (k>=1){ adTimers.splice(i,1); continue; }
+      tm.t = Math.max(0, tm.t - dt*lerp(0.8, 2.2, heat));
+
+      const a = clamp(1 - smoothstep(0.75, 1.0, k), 0, 1);
+      atx.save();
+      atx.globalAlpha = a * lerp(0.10, 0.70, smoothstep(0.2,0.95,heat));
+
+      const base = (tm.style===0) ? "rgba(255,255,255,0.92)" : (tm.style===1 ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.80)");
+      const text = (tm.style===1) ? "rgba(255,255,255,0.95)" : "rgba(0,0,0,0.82)";
+
+      atx.fillStyle = base;
+      atx.strokeStyle = "rgba(0,0,0,0.10)";
+      atx.beginPath();
+      atx.roundRect(tm.x, tm.y, 220, 44, 999);
+      atx.fill(); atx.stroke();
+
+      const mm = Math.floor(tm.t/60);
+      const ss = Math.floor(tm.t%60);
+      const s = `${mm}:${ss.toString().padStart(2,"0")}`;
+
+      atx.fillStyle = text;
+      atx.font = `900 12px ${rpick(COMM_FONTS)}`;
+      atx.fillText(tm.label, tm.x+14, tm.y+18);
+      atx.font = `900 14px ${rpick(COMM_FONTS)}`;
+      atx.fillText(s, tm.x+14, tm.y+36);
+
+      atx.fillStyle = (tm.style===1) ? "rgba(255,230,140,0.92)" : "rgba(0,0,0,0.82)";
+      atx.font = `900 12px ${rpick(COMM_FONTS)}`;
+      atx.fillText(rpick(["CLAIM","BUY","UPGRADE","SUB"]), tm.x+150, tm.y+30);
+
+      atx.restore();
+    }
+  }
+
+  // =========================
+  // Oil/Water interaction: composite commercial layer onto gamer sludge
+  // Different logic + hard collisions
+  // =========================
+  function compositeAdOntoMain(t){
+    const w = c.width, h = c.height;
+
+    // Choose interaction rule each moment (oil/water collisions)
+    const p = smoothstep(0.10, 0.98, heat);
+    const phase = (Math.floor(t/lerp(4.0, 1.8, p)) % 5);
+
+    ctx.save();
+
+    // 1) Sometimes the ad layer behaves like a clean "page" slab ignoring the rest (water on oil)
+    if (phase === 0 && R() < 0.75){
+      ctx.globalAlpha = lerp(0.06, 0.22, p) * lerp(1.0, 1.3, spike);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(ad, 0,0);
+    }
+    // 2) Sometimes it performs violent difference (acid wash)
+    else if (phase === 1){
+      ctx.globalAlpha = lerp(0.10, 0.55, p) * lerp(1.0, 1.4, spike);
+      ctx.globalCompositeOperation = rpick(["difference","exclusion","overlay"]);
+      ctx.drawImage(ad, 0,0);
+    }
+    // 3) Sometimes it uses ad brightness as a stencil-like mask (water cuts holes in oil)
+    else if (phase === 2){
+      // Stencil: draw ad to an offscreen by using globalComposite in place (cheap approximation)
+      ctx.globalAlpha = lerp(0.10, 0.45, p);
+      ctx.globalCompositeOperation = "screen";
+      ctx.drawImage(ad, 0,0);
+    }
+    // 4) Hard wipe stripe (commercial "takeover")
+    else if (phase === 3 && R() < lerp(0.18, 0.70, p)){
+      const stripeH = Math.floor(lerp(40, 160, R()) * lerp(0.8, 1.6, p));
+      const y = Math.floor(lerp(0, h-stripeH, R()));
+      ctx.globalAlpha = lerp(0.35, 0.85, p);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(ad, 0, y, w, stripeH, 0, y, w, stripeH);
+    }
+    // 5) “Sticker” mode: product cards float like UI, but too clean
+    else {
+      ctx.globalAlpha = lerp(0.06, 0.28, p);
+      ctx.globalCompositeOperation = rpick(["lighter","overlay","source-over"]);
+      ctx.drawImage(ad, Math.floor(lerp(-18, 18, R())*p), Math.floor(lerp(-12, 12, R())*p));
+    }
+
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // =========================
+  // Macro texture shifts + spikes
+  // =========================
+  function pickMode(){
+    const p = heat;
+    if (p < 0.18) return "BOOT";
+    if (p < 0.45) return rpick(["HUD_FEED","PATCHNOTES","KILLFEED","RESPAWN"]);
+    if (p < 0.72) return rpick(["MATCH","ANTICHEAT","PATCHNOTES","KILLFEED","SPECTATE"]);
+    return rpick(["GLITCHLOOP","ANTICHEAT","KILLFEED","PATCHNOTES","MATCH"]);
+  }
+
+  function panicBurst(){
+    // a short burst of density: gamer + commercial both spike (oil/water collision)
+    const bursts = Math.floor(lerp(2, 16, heat));
+    for (let i=0;i<bursts;i++){
+      spawnDamage();
+      if (R()<0.62) spawnToast();
+      if (R()<0.36) spawnPopup();
+      if (R()<0.48) spawnTeamChat();
+      if (R()<0.60) spawnPatchLine();
+      if (R()<0.52) spawnKillFeedLine();
+      if (R()<0.58) spawnStreamerChat();
+
+      if (R()<0.55) spawnAdCard();
+      if (R()<0.35) spawnAdBanner();
+      if (R()<0.40) spawnAdTicker();
+      if (R()<0.25) spawnAdReceipt();
+      if (R()<0.20) spawnAdTimer();
+    }
+    spike = clamp(spike + lerp(0.22, 0.70, R()), 0, 1);
+  }
+
+  // =========================
+  // Main loop
+  // =========================
+  function tick(ts){
+    if (!running) return;
+    if (!t0) t0 = ts;
+    const elapsed = (ts - t0)/1000;
+    const t = elapsed;
+
+    const dt = (tick._last ? (ts - tick._last)/1000 : 1/60);
+    tick._last = ts;
+
+    // infinite spiral heat: rises to 1, then oscillates + never fully releases
+    const ramp = 1 - Math.exp(-t/22); // asymptote to 1
+    const breath = 0.08*Math.sin(t*0.7) + 0.05*Math.sin(t*2.1);
+    const cycle = 0.06*Math.sin(t*0.17); // long cycle drift
+    heat = clamp(ramp + breath + cycle, 0, 1);
+
+    // spike decays
+    spike = clamp(spike - dt*lerp(0.35, 0.65, heat), 0, 1);
+
+    // clocks
+    if (t >= macroNext){
+      mode = pickMode();
+      macroSchedule(t);
+      if (R() < lerp(0.12, 0.58, heat)) panicBurst();
+      // cursor skin changes on macro shift
+      if (R() < 0.55) cursorStyle = rint(0,3);
+    }
+    if (t >= microNext){
+      microcutSchedule(t);
+      const n = Math.floor(lerp(1, 12, heat) * lerp(1.0, 1.5, spike));
+      for (let i=0;i<n;i++){
+        if (R()<0.78) spawnDamage();
+        if (R()<0.40) spawnToast();
+        if (R()<0.26) spawnPopup();
+        if (R()<0.40) spawnTeamChat();
+        if (R()<0.55) spawnPatchLine();
+        if (R()<0.50) spawnKillFeedLine();
+        if (R()<0.62) spawnStreamerChat();
+
+        // commercial churn separate (oil/water)
+        if (R()<0.52) spawnAdCard();
+        if (R()<0.32) spawnAdBanner();
+        if (R()<0.38) spawnAdTicker();
+        if (R()<0.22) spawnAdReceipt();
+        if (R()<0.18) spawnAdTimer();
+      }
+      // mode-specific extra
+      if (mode === "ANTICHEAT" && R() < 0.70) spawnPopup();
+      if (mode === "PATCHNOTES" && R() < 0.78) spawnPatchLine();
+      if (mode === "KILLFEED" && R() < 0.72) spawnKillFeedLine();
+    }
+
+    // audio tension coupling
+    // map: heat + spike -> tension; also segmenting via macro mode
+    const modeBias =
+      (mode === "BOOT") ? 0.10 :
+      (mode === "HUD_FEED") ? 0.25 :
+      (mode === "MATCH") ? 0.35 :
+      (mode === "PATCHNOTES") ? 0.45 :
+      (mode === "KILLFEED") ? 0.55 :
+      (mode === "RESPAWN") ? 0.50 :
+      (mode === "SPECTATE") ? 0.58 :
+      (mode === "ANTICHEAT") ? 0.72 :
+      0.82; // GLITCHLOOP
+    const tension = clamp(heat*0.78 + spike*0.55 + modeBias*0.35, 0, 1);
+
+    if (audioOK){
+      if (t >= beepNext) beep(t, tension);
+      if (t >= speechNext && R() < lerp(0.55, 0.92, tension)) speakBurst(t, tension);
+      // subtle master modulation (pressure)
+      const now = ac.currentTime;
+      const target = clamp(lerp(0.25, 0.72, tension), 0, 1);
+      master.gain.setTargetAtTime(target, now, 0.05);
+      // filter harshness rises
+      filt.frequency.setTargetAtTime(lerp(900, 2600, tension), now, 0.04);
+      filt.Q.setTargetAtTime(lerp(0.7, 2.8, tension), now, 0.04);
+      // drive curve changes (abrasive)
+      drive.curve = makeWaveshaper(lerp(10, 26, tension));
+    }
+
+    const w = c.width, h = c.height;
+
+    // Spawn cursor tracers aggressively (mouse “vomit”)
+    const tracerRate = Math.floor(lerp(1, 10, tension));
+    for (let i=0;i<tracerRate;i++){
+      if (R() < 0.88) spawnTracer(mx + lerp(-4,4,R())*tension, my + lerp(-4,4,R())*tension);
+    }
+
+    // 1) base feedback
+    feedbackPass(w,h);
+
+    // 2) gamer HUD skeleton
+    drawHUD(w,h,t);
+
+    // mode overlays (gamer)
+    if (mode === "ANTICHEAT"){
+      ctx.save();
+      ctx.globalAlpha = lerp(0.10, 0.62, tension);
+      ctx.translate(w*0.5, h*0.5);
+      ctx.rotate(lerp(-0.40, 0.40, R()));
+      ctx.font = `900 ${Math.floor(lerp(34, 190, tension))}px Impact, Arial Black, sans-serif`;
+      ctx.fillStyle = cssVar("--bad");
+      ctx.fillText("INTEGRITY VIOLATION", -w*0.46, 0);
+      ctx.restore();
+    } else if (mode === "PATCHNOTES"){
+      ctx.save();
+      ctx.globalAlpha = lerp(0.08, 0.45, tension);
+      ctx.fillStyle = "rgba(0,0,0,0.48)";
+      ctx.fillRect(0, Math.floor(h*0.34), w, Math.floor(h*0.10));
+      ctx.fillStyle = cssVar("--warn");
+      ctx.font = `900 ${Math.floor(lerp(18, 86, tension))}px ui-monospace, Menlo, Consolas, monospace`;
+      ctx.fillText("HOTFIX · ROLLBACK · TELEMETRY · PATCHING ·", 20, Math.floor(h*0.40));
+      ctx.restore();
+    } else if (mode === "GLITCHLOOP"){
+      ctx.save();
+      ctx.globalAlpha = lerp(0.10, 0.35, tension);
+      const z = lerp(1.02, 1.22, tension);
+      ctx.translate(w*0.5, h*0.5);
+      ctx.scale(z, z);
+      ctx.translate(-w*0.5, -h*0.5);
+      ctx.drawImage(prev, 0,0);
+      ctx.restore();
+    }
+
+    // 3) gamer particles
+    drawDamage(dt);
+    drawToasts(dt);
+    drawPopups(dt);
+
+    // 4) gamer panes
+    if (R() < lerp(0.18, 0.85, tension)) drawTeamChat(dt, w, h);
+    if (R() < lerp(0.22, 0.90, tension)) drawPatch(dt, w);
+    if (R() < lerp(0.35, 0.95, tension)) drawKillFeed(dt, w);
+
+    // 5) streamer overlay (scrolling)
+    if (R() < lerp(0.40, 0.98, tension)) drawStreamerOverlay(dt, w, h);
+
+    // 6) commercial layer update + composite (oil/water collision)
+    drawAdLayout(t, dt);
+    compositeAdOntoMain(t);
+
+    // 7) corruption pass (pixel violence)
+    corruptionOps(w,h);
+
+    // 8) scan noise overlay (streamed feel)
+    ctx.save();
+    ctx.globalAlpha = lerp(0.06, 0.22, tension);
+    ctx.globalCompositeOperation = "overlay";
+    ctx.fillStyle = `rgba(255,255,255,${lerp(0.04,0.14,tension).toFixed(3)})`;
+    const lines = Math.floor(lerp(6, 18, tension));
+    for (let i=0;i<lines;i++){
+      const y = Math.floor(R()*h);
+      ctx.fillRect(0, y, w, 1);
+    }
+    ctx.restore();
+    ctx.globalCompositeOperation = "source-over";
+
+    // 9) center redaction: kill the crosshair (always)
+    redactCenter(w,h);
+
+    // 10) tracers + custom cursor on top
+    drawTracers(dt);
+    drawCursor();
+
+    // 11) persist full frame to feedback buffer
+    ptx.drawImage(c, 0, 0);
+
+    raf = requestAnimationFrame(tick);
+  }
+
+  // =========================
+  // Input
+  // =========================
+  window.addEventListener("mousemove", (e) => {
+    const rect = c.getBoundingClientRect();
+    const dpr = c.width / rect.width;
+    mx = (e.clientX - rect.left) * dpr;
+    my = (e.clientY - rect.top) * dpr;
+  }, { passive:true });
+
+  window.addEventListener("mousedown", () => { mDown = true; }, { passive:true });
+  window.addEventListener("mouseup", () => { mDown = false; }, { passive:true });
+
+  // =========================
+  // Fullscreen attempt
+  // =========================
+  async function tryFullscreen(){
+    const el = document.documentElement;
+    if (document.fullscreenElement) return;
+    try{
+      await el.requestFullscreen();
+    }catch(_){
+      // ignore; user gesture rules vary
+    }
+  }
+
+  // =========================
+  // Control
+  // =========================
+  function clearAll(){
+    ctx.fillStyle = cssVar("--bg");
+    ctx.fillRect(0,0,c.width,c.height);
+    ptx.fillStyle = cssVar("--bg");
+    ptx.fillRect(0,0,prev.width,prev.height);
+
+    atx.clearRect(0,0,ad.width, ad.height);
+    apx.clearRect(0,0,adPrev.width, adPrev.height);
+
+    damageNums.length = 0;
+    toasts.length = 0;
+    popups.length = 0;
+    teamChat.length = 0;
+    patchLines.length = 0;
+    killFeed.length = 0;
+    streamerChat.length = 0;
+
+    adCards.length = 0;
+    adBanners.length = 0;
+    adTicker.length = 0;
+    adReceipts.length = 0;
+    adTimers.length = 0;
+
+    tracers.length = 0;
+  }
+
+  function reset(){
+    running = false;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    tick._last = 0;
+
+    // stop speech
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+
+    // fade audio (don’t kill context; just quiet)
+    if (audioOK && ac){
+      const now = ac.currentTime;
+      master.gain.cancelScheduledValues(now);
+      master.gain.setTargetAtTime(0.0001, now, 0.05);
+    }
+
+    heat = 0;
+    spike = 0;
+    mode = "BOOT";
+    adLayout = "STORE_GRID";
+
+    microNext = 0;
+    macroNext = 0;
+    adLayoutNext = 0;
+
+    clearAll();
+
+    startOverlay.style.display = "flex";
+    corner.style.opacity = "0";
+    t0 = 0;
+  }
+
+  function start(){
+    if (running) return;
+
+    seed = hashSeedFromNow();
+    rng = mulberry32(seed);
+
+    // fullscreen attempt + audio init on user gesture
+    tryFullscreen();
+    initAudio();
+
+    startOverlay.style.display = "none";
+    corner.style.opacity = "1";
+
+    // schedule clocks
+    microcutSchedule(0);
+    macroSchedule(0);
+    adLayoutSchedule(0);
+
+    // initial vomit (both layers)
+    for (let i=0;i<12;i++) spawnDamage();
+    for (let i=0;i<6;i++) spawnToast();
+    for (let i=0;i<3;i++) spawnPopup();
+    for (let i=0;i<8;i++) spawnPatchLine();
+    for (let i=0;i<4;i++) spawnTeamChat();
+    for (let i=0;i<5;i++) spawnKillFeedLine();
+    for (let i=0;i<14;i++) spawnStreamerChat();
+
+    for (let i=0;i<10;i++) spawnAdCard();
+    for (let i=0;i<3;i++) spawnAdBanner();
+    for (let i=0;i<4;i++) spawnAdTicker();
+    for (let i=0;i<6;i++) spawnAdReceipt();
+    for (let i=0;i<3;i++) spawnAdTimer();
+
+    // seed prev buffers
+    clearAll();
+    ptx.drawImage(c, 0, 0);
+    apx.drawImage(ad, 0, 0);
+
+    // schedule audio events
+    beepNext = 0;
+    speechNext = 0;
+
+    // cursor style seed
+    cursorStyle = rint(0,3);
+
+    running = true;
+    raf = requestAnimationFrame(tick);
+  }
+
+  beginBtn.addEventListener("click", start);
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") reset();
+  });
+
+  // ensure voices load (some browsers require this call to populate)
+  if ("speechSynthesis" in window){
+    window.speechSynthesis.getVoices?.();
+    window.speechSynthesis.onvoiceschanged = () => {};
+  }
+
+  // init
+  resize();
+  reset();
+
+})();
+</script>
+</body>
+</html>
