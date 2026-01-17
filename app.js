@@ -1,7 +1,7 @@
 // Edit WORKS only.
 const WORKS = [
   { title: "Skull_Dyptych", file: "works/Skull/Skull.html", desc: "delayed self / degraded copy" },
-  { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy" },
+  { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded cop" },
   { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic" },
   { title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / optical pressure" },
 ];
