@@ -1,8 +1,5 @@
-// Minimal brutal index + damped PiP follow + opt-in webcam.
 // Edit WORKS only.
-
 const WORKS = [
-  // file paths are RELATIVE to index.html (repo root)
   { title: "LATENCY_MIRROR", file: "works/latency_mirror.html", desc: "delayed self / degraded copy" },
   { title: "PANOPTICON_PROTOCOL", file: "works/panopticon_protocol.html", desc: "institutional rite / surveillance logic" },
   { title: "COLOUR_STUDY_OKLCH", file: "works/colour_study.html", desc: "formal spine / optical pressure" },
@@ -10,8 +7,18 @@ const WORKS = [
 
 const $ = (sel) => document.querySelector(sel);
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (m) => ({
+    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  })[m]);
+}
+
 function renderWorks() {
   const ul = $("#works");
+  if (!ul) {
+    console.error("[INDEX] Missing #works in index.html");
+    return;
+  }
   ul.innerHTML = "";
 
   for (const w of WORKS) {
@@ -23,7 +30,6 @@ function renderWorks() {
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.innerHTML = `${escapeHtml(w.title)} <span class="arrow">↗</span>`;
-
     li.appendChild(a);
 
     if (w.desc && w.desc.trim()) {
@@ -32,35 +38,19 @@ function renderWorks() {
       d.textContent = w.desc;
       li.appendChild(d);
     }
-
     ul.appendChild(li);
   }
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (m) => ({
-    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
-  })[m]);
-}
-
-// --- PiP damped follow ---
 function pipFollow() {
   const frame = $("#pipFrame");
   if (!frame) return;
 
-  let currentY = 0;
-  let targetY = 0;
+  let currentY = 0, targetY = 0;
 
-  // "float with damping": lerp toward scroll-reactive offset
-  function updateTarget() {
-    const scrollY = window.scrollY || 0;
-    // subtle: you feel it, it doesn't become a toy
-    targetY = scrollY * 0.08; // adjust 0.05–0.12 to taste
-  }
-
+  function updateTarget() { targetY = (window.scrollY || 0) * 0.08; }
   function tick() {
-    // critically damped-ish feel via simple smoothing
-    currentY += (targetY - currentY) * 0.085; // damping strength
+    currentY += (targetY - currentY) * 0.085;
     frame.style.transform = `translate3d(0, ${currentY}px, 0)`;
     requestAnimationFrame(tick);
   }
@@ -70,23 +60,18 @@ function pipFollow() {
   tick();
 }
 
-// --- Webcam gate ---
 async function enableCam() {
   const video = $("#pipVideo");
   const gate = $("#pipGate");
   const status = $("#pipStatus");
+  if (!video || !gate || !status) return;
 
   const say = (msg) => {
     status.textContent = msg;
     status.classList.add("on");
-    window.clearTimeout(say._t);
-    say._t = window.setTimeout(() => status.classList.remove("on"), 1800);
+    clearTimeout(say._t);
+    say._t = setTimeout(() => status.classList.remove("on"), 1800);
   };
-
-  if (!navigator.mediaDevices?.getUserMedia) {
-    say("CAMERA API UNAVAILABLE.");
-    return;
-  }
 
   gate.disabled = true;
   gate.textContent = "REQUESTING…";
@@ -94,12 +79,12 @@ async function enableCam() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user" },
-      audio: false,
+      audio: false
     });
     video.srcObject = stream;
     gate.textContent = "CAM ENABLED ↗";
     say("INPUT ACCEPTED.");
-  } catch (err) {
+  } catch {
     gate.disabled = false;
     gate.textContent = "ENABLE CAM ↗";
     say("DENIED.");
@@ -109,7 +94,6 @@ async function enableCam() {
 function main() {
   renderWorks();
   pipFollow();
-
   const gate = $("#pipGate");
   if (gate) gate.addEventListener("click", enableCam);
 }
